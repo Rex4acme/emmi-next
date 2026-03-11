@@ -81,6 +81,23 @@ input, textarea, select {
   outline: none;
 }
 
+/* Fix icon overlap inside relative containers */
+.input-icon-wrap {
+  position: relative;
+}
+.input-icon-wrap svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 1;
+}
+.input-icon-wrap input {
+  padding-left: 36px !important;
+  width: 100%;
+}
+
 /* ── Scrollbar styling (dark theme) ───────────────────────── */
 ::-webkit-scrollbar       { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--surface); }
