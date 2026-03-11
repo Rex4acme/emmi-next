@@ -27,6 +27,7 @@ export function useFaultReminder(userId: string | null): ReminderState {
 
   useEffect(() => {
     if (!userId) return; // not signed in — skip
+    const safeUserId: string = userId;
 
     async function checkReminders() {
       const now  = new Date();
@@ -43,7 +44,7 @@ export function useFaultReminder(userId: string | null): ReminderState {
       // Query for open faults that haven't had a reminder sent yet
       const unresolvedFaults = await getUnresolvedFaultsSince(
         supabase,
-        userId,
+        safeUserId,
         midnight.toISOString()
       );
 
