@@ -254,3 +254,45 @@ textarea.form-input {
 .pb-safe {
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+/* ── Floating EMMI pulse indicator ──────────────────────────── */
+/* Shows in bottom-right corner on every page — subtle amber pulse */
+@keyframes emmi-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(1);    box-shadow: 0 0 0 0 rgba(240,165,0,0.4); }
+  50%       { opacity: 1;   transform: scale(1.08); box-shadow: 0 0 0 6px rgba(240,165,0,0);  }
+}
+@keyframes zap-spin {
+  0%   { transform: rotate(-15deg); }
+  50%  { transform: rotate(15deg);  }
+  100% { transform: rotate(-15deg); }
+}
+.emmi-pulse-indicator {
+  position: fixed;
+  bottom: 80px; /* above mobile bottom nav */
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(240,165,0,0.1);
+  border: 1.5px solid rgba(240,165,0,0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: emmi-pulse 2.4s ease-in-out infinite;
+  z-index: 30;
+  cursor: default;
+  backdrop-filter: blur(8px);
+}
+.emmi-pulse-indicator svg {
+  animation: zap-spin 2.4s ease-in-out infinite;
+  color: var(--amber);
+}
+/* On desktop — position above bottom, no mobile nav offset */
+@media (min-width: 768px) {
+  .emmi-pulse-indicator {
+    bottom: 24px;
+    right: 24px;
+    width: 40px;
+    height: 40px;
+  }
+}

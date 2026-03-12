@@ -436,3 +436,56 @@ export async function seedDefaults(supabase: SupabaseClient, userId: string): Pr
     ),
   ]);
 }
+
+// ── Alias for getResolutionsForFault (fixes fault detail page) ─
+export async function getResolutions(supabase: SupabaseClient, faultId: string): Promise<Resolution[]> {
+  return getResolutionsForFault(supabase, faultId);
+}
+
+// ── KPI / Appraisal Data ───────────────────────────────────────
+// Returns all data needed for end-of-year KPI appraisal report
+export async function getKPIData(supabase: SupabaseClient, userId: string, year: number) {
+  const start = `${year}-01-01T00:00:00.000Z`;
+  const end   = `${year}-12-31T23:59:59.999Z`;
+
+  const [faultsRes, activitiesRes] = await Promise.all([
+    supabase
+      .from('faults')
+      .select('*, equipment(name, tag_id), fault_category(name)')
+      .eq('user_id', userId)
+      .gte('detected_at', start)
+      .lte('detected_at', end)
+      .order('detected_at', { ascending: false }),
+    supabase
+      .from('activities')
+      .select('*, equipment(name, tag_id), activity_type(name, icon)')
+      .eq('user_id', userId)
+      .gte('scheduled_date', start)
+      .lte('scheduled_date', end)
+      .order('scheduled_date', { ascending: false }),
+  ]);
+
+  const faults     = faultsRes.data     || [];
+  const activities = activitiesRes.data || [];
+
+  // Compute summary stats
+  const resolvedFaults    = faults.filter((f: any) => f.status === 'resolved');
+  const criticalResolved  = resolvedFaults.filter((f: any) => f.severity === 'critical');
+  const totalDowntime     = faults.reduce((sum: number, f: any) => sum + (f.downtime_minutes || 0), 0);
+  const completedActs     = activities.filter((a: any) => a.status === 'completed');
+
+  return {
+    year,
+    faults,
+    activities,
+    stats: {
+      totalFaults:        faults.length,
+      resolvedFaults:     resolvedFaults.length,
+      criticalResolved:   criticalResolved.length,
+      totalDowntimeMins:  totalDowntime,
+      totalActivities:    activities.length,
+      completedActivities:completedActs.length,
+      resolutionRate:     faults.length > 0 ? Math.round((resolvedFaults.length / faults.length) * 100) : 0,
+    },
+  };
+}

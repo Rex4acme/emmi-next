@@ -9,7 +9,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { createBrowserClient } from '@/lib/supabase';
 import {
   Zap, LayoutDashboard, Cpu, AlertTriangle,
-  ClipboardList, User, LogOut, Menu, X, Bell
+  ClipboardList, User, LogOut, Menu, X, Bell, Trophy
 } from 'lucide-react';
 
 // ── Nav items ─────────────────────────────────────────────────
@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { href: '/equipment',  icon: Cpu,             label: 'Equipment'  },
   { href: '/faults',     icon: AlertTriangle,   label: 'Faults'     },
   { href: '/activities', icon: ClipboardList,   label: 'Activities' },
+  { href: '/kpi',        icon: Trophy,          label: 'KPI'        },
   { href: '/profile',    icon: User,            label: 'Profile'    },
 ];
 
@@ -181,7 +182,7 @@ export default function AppShell({ children, title, action }: Props) {
       <div className="flex flex-col flex-1 overflow-hidden">
 
         {/* Top header bar */}
-        <header className="flex items-center justify-between px-4 py-3 flex-shrink-0"
+        <header className="flex items-center justify-between px-4 py-3 flex-shrink-0 md:px-8"
           style={{ borderBottom: '1px solid var(--border)', background: 'var(--base)' }}>
 
           {/* Hamburger menu (mobile only) */}
@@ -215,7 +216,7 @@ export default function AppShell({ children, title, action }: Props) {
 
         {/* Page content — scrollable */}
         <main className="flex-1 overflow-y-auto">
-          <div className="p-4 pb-24 md:pb-6 page-enter">
+          <div className="p-4 pb-24 md:pb-6 page-enter max-w-4xl mx-auto w-full">
             {children}
           </div>
         </main>
@@ -241,6 +242,13 @@ export default function AppShell({ children, title, action }: Props) {
           </Link>
         ))}
       </nav>
+
+      {/* ── Floating EMMI pulse indicator — visible on every page ── */}
+      <div className="emmi-pulse-indicator" title="EMMI Active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+      </div>
 
     </div>
   );
