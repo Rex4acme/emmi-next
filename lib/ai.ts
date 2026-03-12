@@ -1,22 +1,32 @@
 // lib/ai.ts — AI helper functions (browser-side)
-// These functions call /api/ai (our Next.js API route) which
-// then calls Anthropic Claude securely server-side.
-// The Anthropic API key is NEVER exposed to the browser.
+// Calls /api/ai which uses Pollinations AI (free, no key) with fallback chain
 
 import type { Fault, AIFaultAnalysis, AIAssistantResult } from '@/types';
 
+// ── Message type for conversation memory ─────────────────────
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 // ── Call the AI proxy ─────────────────────────────────────────
-// All AI requests go through /api/ai which adds the API key server-side.
-// model: claude-sonnet-4-5 — best balance of speed, quality, and cost
-async function callAI(prompt: string, systemPrompt: string): Promise<string> {
+async function callAI(
+  prompt: string,
+  systemPrompt: string,
+  history: ChatMessage[] = []
+): Promise<string> {
+  // Build messages array including conversation history for memory
+  const messages = [
+    ...history,
+    { role: 'user', content: prompt }
+  ];
+
   const response = await fetch('/api/ai', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-5',    // Anthropic Claude Sonnet — fast and capable
-      max_tokens: 1500,               // Max response length
-      system: systemPrompt,           // Sets AI persona and context
-      messages: [{ role: 'user', content: prompt }],
+      system:   systemPrompt,
+      messages: messages,
     }),
   });
 
@@ -26,12 +36,10 @@ async function callAI(prompt: string, systemPrompt: string): Promise<string> {
   }
 
   const data = await response.json();
-  // Extract text from Anthropic's response structure
   return data.content?.[0]?.text || '';
 }
 
-// ── System prompt — sets AI persona ──────────────────────────
-// This tells Claude to act as an electrical engineering expert
+// ── System prompt ─────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are EMMI AI — an expert electrical engineering assistant with 20+ years of experience in industrial power systems, maintenance, fault diagnosis, and SCADA/DCS systems. You help engineers troubleshoot faults, plan maintenance, and make safety-conscious decisions.
 
 Always respond in valid JSON only. No markdown, no preamble, no explanation outside the JSON object.
@@ -39,25 +47,17 @@ Be technically precise. Use proper electrical engineering terminology.
 Always include safety warnings for high-voltage or dangerous work.`;
 
 // ── Fault Analysis ────────────────────────────────────────────
-// Given a fault record, return structured diagnostic analysis
 export async function analyzeFault(fault: Fault): Promise<AIFaultAnalysis> {
   const prompt = `Analyse this electrical fault and respond with a JSON object:
 
 FAULT DETAILS:
 - Title: ${fault.title}
 - Equipment: ${fault.equipment?.name || 'Unknown'} (${fault.equipment?.tag_id || 'N/A'})
-- Category: ${fault.fault_category?.name || 'Unknown'}
 - Severity: ${fault.severity}
 - Status: ${fault.status}
-- Detected: ${fault.detected_at}
-- Detection Method: ${fault.detection_method || 'Not specified'}
 - Location: ${fault.fault_location || 'Not specified'}
-- Affected Circuit: ${fault.affected_circuit || 'Not specified'}
-- Safety Impact: ${fault.safety_impact || 'Not assessed'}
-- Downtime: ${fault.downtime_minutes ? fault.downtime_minutes + ' minutes' : 'Not recorded'}
 - Description: ${fault.description || 'None provided'}
 - Symptoms: ${fault.symptoms?.join(', ') || 'None listed'}
-- Measurements: ${fault.measurements ? JSON.stringify(fault.measurements) : 'None recorded'}
 - Is Recurring: ${fault.is_recurring ? 'Yes' : 'No'}
 
 Respond ONLY with this JSON structure:
@@ -76,18 +76,23 @@ Respond ONLY with this JSON structure:
 }`;
 
   try {
-    const raw = await callAI(prompt, SYSTEM_PROMPT);
-    const json = raw.replace(/```json|```/g, '').trim(); // strip any accidental markdown
-    const parsed = JSON.parse(json);
+    const raw    = await callAI(prompt, SYSTEM_PROMPT);
+    const json   = raw.replace(/```json|```/g, '').trim();
+    // Find JSON object in response even if there's extra text
+    const match  = json.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(match ? match[0] : json);
     return { ok: true, ...parsed };
   } catch (err: any) {
     return { ok: false, error: err.message || 'AI analysis failed' };
   }
 }
 
-// ── Q&A Assistant ─────────────────────────────────────────────
-// Answer a free-form engineering question from the dashboard
-export async function askQuestion(question: string, context?: string): Promise<AIAssistantResult> {
+// ── Q&A Assistant with conversation memory ────────────────────
+export async function askQuestion(
+  question: string,
+  context?: string,
+  history: ChatMessage[] = []
+): Promise<AIAssistantResult> {
   const prompt = `Answer this electrical engineering question:
 
 QUESTION: ${question}
@@ -102,9 +107,10 @@ Respond ONLY with this JSON:
 }`;
 
   try {
-    const raw = await callAI(prompt, SYSTEM_PROMPT);
-    const json = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(json);
+    const raw    = await callAI(prompt, SYSTEM_PROMPT, history);
+    const json   = raw.replace(/```json|```/g, '').trim();
+    const match  = json.match(/\{[\s\S]*\}/);
+    const parsed = JSON.parse(match ? match[0] : json);
     return { ok: true, ...parsed };
   } catch (err: any) {
     return { ok: false, error: err.message || 'AI request failed' };

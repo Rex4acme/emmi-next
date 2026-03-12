@@ -7,16 +7,20 @@ const fontBody    = DM_Sans({ subsets: ['latin'], variable: '--font-body', weigh
 const fontMono    = JetBrains_Mono({ subsets: ['latin'], variable: '--font-mono', weight: ['400','500','600'] });
 
 export const metadata: Metadata = {
-  title:       'EMMI — Electrical Maintenance Intelligence',
+  title: 'EMMI — Electrical Maintenance Intelligence',
   description: 'Personal electrical equipment management and fault tracking logbook.',
-  manifest:    '/manifest.json',
+  manifest: '/manifest.json',
+  icons: {
+    icon: '/icons/favicon-32.png',
+    apple: '/icons/icon-192.png',
+  },
 };
 
 export const viewport: Viewport = {
-  themeColor:   '#f0a500',
-  width:        'device-width',
+  themeColor: '#f0a500',
+  width: 'device-width',
   initialScale: 1,
-  viewportFit:  'cover',
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

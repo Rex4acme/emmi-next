@@ -27,8 +27,8 @@
 
   /* Text colours */
   --text:    #e6edf3;
-  --text-2:  #8b949e;
-  --text-3:  #484f58;
+  --text-2:  #b0bac6;
+  --text-3:  #6e7681;
 
   /* Radius */
   --r:    8px;
@@ -131,7 +131,7 @@ input, textarea, select {
   outline: none;
 }
 .form-input::placeholder {
-  color: var(--text-3);
+  color: #5a6270;
 }
 
 /* Select arrow — white for dark theme */
