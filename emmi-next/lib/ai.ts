@@ -21,27 +21,14 @@ async function callAI(
     { role: 'user', content: prompt }
   ];
 
-  // 30s timeout — prevents infinite spinner if AI provider is slow
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 30000);
-
-  let response: Response;
-  try {
-    response = await fetch('/api/ai', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system:   systemPrompt,
-        messages: messages,
-      }),
-      signal: controller.signal,
-    });
-  } catch (err: any) {
-    if (err.name === 'AbortError') throw new Error('AI timed out. Please try again.');
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
+  const response = await fetch('/api/ai', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      system:   systemPrompt,
+      messages: messages,
+    }),
+  });
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));

@@ -173,7 +173,7 @@ export default function ProfilePage() {
           </div>
 
           <div className="flex-1">
-            <p className="font-bold text-base" style={{ color: '#ffffff' }}>{fullName || 'Your Name'}</p>
+            <p className="font-bold text-base">{fullName || 'Your Name'}</p>
             {title        && <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>{title}</p>}
             {organization && <p className="text-xs" style={{ color: 'var(--text-3)' }}>{organization}</p>}
             {saved && (

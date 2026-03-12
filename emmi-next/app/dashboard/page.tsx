@@ -137,7 +137,7 @@ export default function DashboardPage() {
     >
       {/* Welcome */}
       <div className="mb-5">
-        <h2 className="text-lg font-bold font-display" style={{ color: '#ffffff' }}>
+        <h2 className="text-lg font-bold font-display">
           {profile?.full_name ? `Welcome, ${profile.full_name.split(' ')[0]}` : 'Welcome back'} ⚡
         </h2>
         <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
