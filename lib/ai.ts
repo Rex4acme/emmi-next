@@ -76,14 +76,17 @@ Respond ONLY with this JSON structure:
 }`;
 
   try {
-    const raw    = await callAI(prompt, SYSTEM_PROMPT);
-    const json   = raw.replace(/```json|```/g, '').trim();
-    // Find JSON object in response even if there's extra text
-    const match  = json.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(match ? match[0] : json);
+    const raw   = await callAI(prompt, SYSTEM_PROMPT);
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const match = clean.match(/\{[\s\S]*\}/);
+    if (!match) {
+      // AI returned plain text not JSON — show as summary directly
+      return { ok: true, summary: clean || 'Tap Re-analyse for detailed results.', probable_causes: [], recommended_actions: [], safety_warnings: [], prevention_tip: '' };
+    }
+    const parsed = JSON.parse(match[0]);
     return { ok: true, ...parsed };
   } catch (err: any) {
-    return { ok: false, error: err.message || 'AI analysis failed' };
+    return { ok: false, error: 'Tap Re-analyse — AI returned unexpected format.' };
   }
 }
 
@@ -107,12 +110,16 @@ Respond ONLY with this JSON:
 }`;
 
   try {
-    const raw    = await callAI(prompt, SYSTEM_PROMPT, history);
-    const json   = raw.replace(/```json|```/g, '').trim();
-    const match  = json.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(match ? match[0] : json);
+    const raw   = await callAI(prompt, SYSTEM_PROMPT, history);
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const match = clean.match(/\{[\s\S]*\}/);
+    if (!match) {
+      // Plain text response — wrap it as summary
+      return { ok: true, summary: clean, key_points: [], safety_note: '', next_step: '' };
+    }
+    const parsed = JSON.parse(match[0]);
     return { ok: true, ...parsed };
   } catch (err: any) {
-    return { ok: false, error: err.message || 'AI request failed' };
+    return { ok: false, error: 'AI returned unexpected format. Please try again.' };
   }
 }
