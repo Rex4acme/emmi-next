@@ -1,7 +1,7 @@
 {
   "name": "emmi",
   "version": "1.0.0",
-  "description": "Electrical Maintenance & Management Intelligence — personal engineering logbook",
+  "description": "Electrical Maintenance & Management Intelligence \u2014 personal engineering logbook",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -18,7 +18,8 @@
     "date-fns": "^3.6.0",
     "lucide-react": "^0.400.0",
     "clsx": "^2.1.1",
-    "tailwind-merge": "^2.4.0"
+    "tailwind-merge": "^2.4.0",
+    "jszip": "^3.10.1"
   },
   "devDependencies": {
     "@types/node": "^20",

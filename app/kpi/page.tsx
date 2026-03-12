@@ -13,6 +13,7 @@ import {
   Zap, ClipboardList, Clock, TrendingUp,
   AlertTriangle, FileText, Download,
 } from 'lucide-react';
+import JSZip from 'jszip';
 
 export default function KPIPage() {
   const supabase    = createBrowserClient();
@@ -173,7 +174,6 @@ Make it impressive, factual, and suitable for a formal appraisal. Plain text onl
       // Use JSZip-style manual zip creation via fetch to a service
       // Since we can't import JSZip easily, we create a simple blob download
       // by encoding the docx as a base64 string built from scratch
-      const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm' as any);
       const zip = new JSZip();
       zip.file('[Content_Types].xml', contentTypes);
       zip.file('_rels/.rels', relsXml);

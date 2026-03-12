@@ -39,15 +39,21 @@ export default function FaultDetailPage() {
 
   useEffect(() => {
     async function load() {
-      const [f, r] = await Promise.all([
-        getFaultById(supabase, id),
-        getResolutions(supabase, id),
-      ]);
-      setFault(f);
-      setResolutions(r);
-      setLoading(false);
+      try {
+        const [f, r] = await Promise.all([
+          getFaultById(supabase, id),
+          getResolutions(supabase, id),
+        ]);
+        setFault(f);
+        setResolutions(r || []);
+      } catch (err) {
+        console.error('Fault load error:', err);
+        setFault(null);
+      } finally {
+        setLoading(false);
+      }
     }
-    load();
+    if (id) load();
   }, [id]);
 
   useEffect(() => {
