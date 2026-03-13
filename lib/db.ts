@@ -1,22 +1,15 @@
 // lib/db.ts — All database query functions
 // Every function here maps to a Supabase table operation.
-// All functions take a supabase client so they work in both
-// browser (client components) and server (server components/API routes).
-//
-// Usage:
-//   const supabase = createBrowserClient();
-//   const faults = await getFaults(supabase, userId);
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
   Profile, Equipment, Fault, Activity, Resolution,
-  Category, ActivityType, FaultCategory, Stats, PartItem
+  Category, ActivityType, FaultCategory, Stats, PartItem,
+  ShiftLog, Task, EquipmentHealth, FeedItem,
 } from '@/types';
 
 // ── Helpers ───────────────────────────────────────────────────
 
-// Generate a fault code from equipment tag + sequence
-// e.g. "FLT-TR001-004"
 export function generateFaultCode(tagId: string, count: number): string {
   const seq = String(count + 1).padStart(3, '0');
   return `FLT-${tagId.replace(/[^A-Z0-9]/gi, '').toUpperCase()}-${seq}`;
@@ -24,17 +17,15 @@ export function generateFaultCode(tagId: string, count: number): string {
 
 // ── Profile ───────────────────────────────────────────────────
 
-// Get the engineer's profile. Returns null if not yet created (first run).
 export async function getProfile(supabase: SupabaseClient, userId: string): Promise<Profile | null> {
   const { data } = await supabase
     .from('profiles')
     .select('*')
-    .eq('id', userId)       // Profile ID = Supabase Auth user ID
+    .eq('id', userId)
     .single();
   return data;
 }
 
-// Create or update the profile (upsert = insert if new, update if exists)
 export async function saveProfile(supabase: SupabaseClient, profile: Partial<Profile> & { id: string }): Promise<Profile> {
   const { data, error } = await supabase
     .from('profiles')
@@ -45,7 +36,17 @@ export async function saveProfile(supabase: SupabaseClient, profile: Partial<Pro
   return data;
 }
 
-// ── Categories (Equipment) ────────────────────────────────────
+// NEW: Get all engineers in the same org (for task assignment, feed)
+export async function getOrgMembers(supabase: SupabaseClient, orgId: string): Promise<Profile[]> {
+  const { data } = await supabase
+    .from('profiles')
+    .select('id, full_name, title, avatar_url, role, employee_id')
+    .eq('org_id', orgId)
+    .order('full_name');
+  return data || [];
+}
+
+// ── Categories ────────────────────────────────────────────────
 
 export async function getCategories(supabase: SupabaseClient, userId: string): Promise<Category[]> {
   const { data } = await supabase
@@ -56,7 +57,6 @@ export async function getCategories(supabase: SupabaseClient, userId: string): P
   return data || [];
 }
 
-// Add a new custom category (e.g. when user types a new one in the combobox)
 export async function addCategory(supabase: SupabaseClient, userId: string, name: string, icon = '⚙'): Promise<Category> {
   const { data, error } = await supabase
     .from('categories')
@@ -91,7 +91,6 @@ export async function getFaultCategories(supabase: SupabaseClient, userId: strin
 
 // ── Equipment ─────────────────────────────────────────────────
 
-// Get all equipment, with category joined
 export async function getEquipment(
   supabase: SupabaseClient,
   userId: string,
@@ -99,14 +98,13 @@ export async function getEquipment(
 ): Promise<Equipment[]> {
   let query = supabase
     .from('equipment')
-    .select('*, category:categories(*)')  // Join category table
+    .select('*, category:categories(*), health:equipment_health(*)')
     .eq('user_id', userId)
     .order('tag_id');
 
   if (filters?.status)      query = query.eq('status', filters.status);
   if (filters?.category_id) query = query.eq('category_id', filters.category_id);
   if (filters?.search) {
-    // Search across tag_id, name, and location
     query = query.or(
       `tag_id.ilike.%${filters.search}%,name.ilike.%${filters.search}%,location.ilike.%${filters.search}%`
     );
@@ -119,7 +117,7 @@ export async function getEquipment(
 export async function getEquipmentById(supabase: SupabaseClient, id: string): Promise<Equipment | null> {
   const { data } = await supabase
     .from('equipment')
-    .select('*, category:categories(*)')
+    .select('*, category:categories(*), health:equipment_health(*)')
     .eq('id', id)
     .single();
   return data;
@@ -151,6 +149,102 @@ export async function deleteEquipment(supabase: SupabaseClient, id: string): Pro
   if (error) throw error;
 }
 
+// ── Equipment Health Score ────────────────────────────────────
+
+// NEW: Compute and save health score for a piece of equipment
+// Score is based on: fault count (last 30 days) + downtime + recency
+export async function computeAndSaveHealthScore(
+  supabase: SupabaseClient,
+  userId: string,
+  equipmentId: string
+): Promise<EquipmentHealth> {
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  // Get faults in last 30 days for this equipment
+  const { data: faults } = await supabase
+    .from('faults')
+    .select('id, downtime_minutes, severity, detected_at, status')
+    .eq('equipment_id', equipmentId)
+    .eq('user_id', userId)
+    .gte('detected_at', thirtyDaysAgo.toISOString());
+
+  const recentFaults = faults || [];
+  const faultCount   = recentFaults.length;
+  const totalDowntime = recentFaults.reduce((sum, f) => sum + (f.downtime_minutes || 0), 0);
+  const lastFault    = recentFaults[0];
+
+  // Score calculation
+  // Start at 100, deduct for:
+  // - Each fault in 30 days: -8 points
+  // - Each critical fault: -5 extra
+  // - Each hour of downtime: -2 points (capped at -30)
+  // - Open/recurring faults: -5 each
+  let score = 100;
+  score -= faultCount * 8;
+  score -= recentFaults.filter(f => f.severity === 'critical').length * 5;
+  score -= Math.min(Math.floor(totalDowntime / 60) * 2, 30);
+  score -= recentFaults.filter(f => ['open', 'recurring'].includes(f.status)).length * 5;
+  score  = Math.max(0, Math.min(100, score));
+
+  const healthStatus: EquipmentHealth['status'] =
+    score >= 75 ? 'healthy' :
+    score >= 40 ? 'warning' : 'critical';
+
+  const { data, error } = await supabase
+    .from('equipment_health')
+    .upsert({
+      equipment_id:    equipmentId,
+      user_id:         userId,
+      health_score:    score,
+      status:          healthStatus,
+      fault_count_30d: faultCount,
+      downtime_30d:    totalDowntime,
+      last_fault_at:   lastFault?.detected_at || null,
+      computed_at:     new Date().toISOString(),
+    }, { onConflict: 'equipment_id' })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+// NEW: Recompute health scores for all equipment owned by user
+export async function recomputeAllHealthScores(supabase: SupabaseClient, userId: string): Promise<void> {
+  const { data: equipment } = await supabase
+    .from('equipment')
+    .select('id')
+    .eq('user_id', userId);
+
+  if (!equipment) return;
+
+  await Promise.all(
+    equipment.map(eq => computeAndSaveHealthScore(supabase, userId, eq.id))
+  );
+}
+
+// NEW: Get equipment sorted by health score (worst first) for reliability ranking
+export async function getEquipmentByHealth(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<Equipment[]> {
+  const { data } = await supabase
+    .from('equipment')
+    .select('*, category:categories(*), health:equipment_health(*)')
+    .eq('user_id', userId)
+    .order('tag_id');
+
+  if (!data) return [];
+
+  // Sort: critical first, then by score ascending (worst health first)
+  return data.sort((a, b) => {
+    const sa = a.health?.health_score ?? 100;
+    const sb = b.health?.health_score ?? 100;
+    return sa - sb;
+  });
+}
+
 // ── Faults ────────────────────────────────────────────────────
 
 export async function getFaults(
@@ -165,7 +259,7 @@ export async function getFaults(
     .from('faults')
     .select('*, equipment:equipment(id,tag_id,name), fault_category:fault_categories(id,name,icon,color)')
     .eq('user_id', userId)
-    .order('detected_at', { ascending: false }); // newest first
+    .order('detected_at', { ascending: false });
 
   if (filters?.status)           query = query.eq('status', filters.status);
   if (filters?.severity)         query = query.eq('severity', filters.severity);
@@ -179,6 +273,24 @@ export async function getFaults(
   return data || [];
 }
 
+// NEW: Get faults from entire org (for shared feed)
+export async function getOrgFaults(
+  supabase: SupabaseClient,
+  limit = 20
+): Promise<Fault[]> {
+  const { data } = await supabase
+    .from('faults')
+    .select(`
+      *,
+      equipment:equipment(id,tag_id,name),
+      fault_category:fault_categories(id,name,icon,color),
+      profile:profiles(id,full_name,avatar_url,title)
+    `)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  return data || [];
+}
+
 export async function getFaultById(supabase: SupabaseClient, id: string): Promise<Fault | null> {
   const { data } = await supabase
     .from('faults')
@@ -188,26 +300,31 @@ export async function getFaultById(supabase: SupabaseClient, id: string): Promis
   return data;
 }
 
-// Get faults that are still unresolved after midnight (for 7am reminder)
 export async function getUnresolvedFaultsSince(supabase: SupabaseClient, userId: string, since: string): Promise<Fault[]> {
   const { data } = await supabase
     .from('faults')
     .select('id, title, severity, detected_at, status, reminder_sent')
     .eq('user_id', userId)
-    .in('status', ['open', 'under_investigation', 'recurring']) // not resolved
-    .lt('detected_at', since)   // detected before midnight
-    .eq('reminder_sent', false) // haven't shown reminder yet
-    .order('severity');         // critical first
+    .in('status', ['open', 'under_investigation', 'recurring'])
+    .lt('detected_at', since)
+    .eq('reminder_sent', false)
+    .order('severity');
   return data || [];
 }
 
 export async function createFault(supabase: SupabaseClient, userId: string, fault: Omit<Fault, 'id' | 'user_id' | 'created_at' | 'updated_at'>): Promise<Fault> {
   const { data, error } = await supabase
     .from('faults')
-    .insert({ ...fault, user_id: userId, reminder_sent: false })
+    .insert({ ...fault, user_id: userId })
     .select()
     .single();
   if (error) throw error;
+
+  // Recompute health score for affected equipment
+  if (fault.equipment_id) {
+    computeAndSaveHealthScore(supabase, userId, fault.equipment_id).catch(() => {});
+  }
+
   return data;
 }
 
@@ -227,11 +344,6 @@ export async function deleteFault(supabase: SupabaseClient, id: string): Promise
   if (error) throw error;
 }
 
-// Mark fault reminder as sent so it doesn't fire again
-export async function markReminderSent(supabase: SupabaseClient, faultId: string): Promise<void> {
-  await supabase.from('faults').update({ reminder_sent: true }).eq('id', faultId);
-}
-
 // ── Resolutions ───────────────────────────────────────────────
 
 export async function getResolutionsForFault(supabase: SupabaseClient, faultId: string): Promise<Resolution[]> {
@@ -239,8 +351,12 @@ export async function getResolutionsForFault(supabase: SupabaseClient, faultId: 
     .from('resolutions')
     .select('*')
     .eq('fault_id', faultId)
-    .order('resolved_at', { ascending: false });
+    .order('created_at', { ascending: false });
   return data || [];
+}
+
+export async function getResolutions(supabase: SupabaseClient, faultId: string): Promise<Resolution[]> {
+  return getResolutionsForFault(supabase, faultId);
 }
 
 export async function createResolution(supabase: SupabaseClient, userId: string, resolution: Omit<Resolution, 'id' | 'user_id' | 'created_at'>): Promise<Resolution> {
@@ -253,23 +369,12 @@ export async function createResolution(supabase: SupabaseClient, userId: string,
   return data;
 }
 
-export async function updateResolution(supabase: SupabaseClient, id: string, updates: Partial<Resolution>): Promise<Resolution> {
-  const { data, error } = await supabase
-    .from('resolutions')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
-}
-
 // ── Activities ────────────────────────────────────────────────
 
 export async function getActivities(
   supabase: SupabaseClient,
   userId: string,
-  filters?: { status?: string; activity_type_id?: string; equipment_id?: string; search?: string }
+  filters?: { status?: string; equipment_id?: string; search?: string }
 ): Promise<Activity[]> {
   let query = supabase
     .from('activities')
@@ -277,14 +382,31 @@ export async function getActivities(
     .eq('user_id', userId)
     .order('scheduled_date', { ascending: false });
 
-  if (filters?.status)           query = query.eq('status', filters.status);
-  if (filters?.activity_type_id) query = query.eq('activity_type_id', filters.activity_type_id);
-  if (filters?.equipment_id)     query = query.eq('equipment_id', filters.equipment_id);
+  if (filters?.status)       query = query.eq('status', filters.status);
+  if (filters?.equipment_id) query = query.eq('equipment_id', filters.equipment_id);
   if (filters?.search) {
-    query = query.or(`title.ilike.%${filters.search}%,work_order_ref.ilike.%${filters.search}%`);
+    query = query.or(`title.ilike.%${filters.search}%,description.ilike.%${filters.search}%`);
   }
 
   const { data } = await query;
+  return data || [];
+}
+
+// NEW: Get activities from entire org (for shared feed)
+export async function getOrgActivities(
+  supabase: SupabaseClient,
+  limit = 20
+): Promise<Activity[]> {
+  const { data } = await supabase
+    .from('activities')
+    .select(`
+      *,
+      equipment:equipment(id,tag_id,name),
+      activity_type:activity_types(id,name,icon,color),
+      profile:profiles(id,full_name,avatar_url,title)
+    `)
+    .order('created_at', { ascending: false })
+    .limit(limit);
   return data || [];
 }
 
@@ -323,10 +445,199 @@ export async function deleteActivity(supabase: SupabaseClient, id: string): Prom
   if (error) throw error;
 }
 
+// ── Shift Logs ────────────────────────────────────────────────
+
+// NEW: Create a shift handover log
+export async function createShiftLog(
+  supabase: SupabaseClient,
+  userId: string,
+  log: Omit<ShiftLog, 'id' | 'user_id' | 'created_at' | 'updated_at'>
+): Promise<ShiftLog> {
+  const { data, error } = await supabase
+    .from('shift_logs')
+    .insert({ ...log, user_id: userId })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// NEW: Get shift logs for the org (all engineers see all shifts)
+export async function getOrgShiftLogs(
+  supabase: SupabaseClient,
+  orgId: string,
+  limit = 10
+): Promise<ShiftLog[]> {
+  const { data } = await supabase
+    .from('shift_logs')
+    .select('*, profile:profiles(id,full_name,avatar_url,title)')
+    .eq('org_id', orgId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  return data || [];
+}
+
+// NEW: Get today's shift log for current user
+export async function getTodayShiftLog(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<ShiftLog | null> {
+  const today = new Date().toISOString().split('T')[0];
+  const { data } = await supabase
+    .from('shift_logs')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('shift_date', today)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data;
+}
+
+// ── Maintenance Tasks ─────────────────────────────────────────
+
+// NEW: Create a maintenance task
+export async function createTask(
+  supabase: SupabaseClient,
+  userId: string,
+  task: Omit<Task, 'id' | 'created_by' | 'created_at' | 'updated_at'>
+): Promise<Task> {
+  const { data, error } = await supabase
+    .from('tasks')
+    .insert({ ...task, created_by: userId })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// NEW: Get tasks for org
+export async function getOrgTasks(
+  supabase: SupabaseClient,
+  orgId: string,
+  filters?: { status?: string; assigned_to?: string }
+): Promise<Task[]> {
+  let query = supabase
+    .from('tasks')
+    .select('*, equipment:equipment(id,tag_id,name)')
+    .eq('org_id', orgId)
+    .order('created_at', { ascending: false });
+
+  if (filters?.status)      query = query.eq('status', filters.status);
+  if (filters?.assigned_to) query = query.eq('assigned_to', filters.assigned_to);
+
+  const { data } = await query;
+  return data || [];
+}
+
+// NEW: Get tasks assigned to current user
+export async function getMyTasks(
+  supabase: SupabaseClient,
+  userId: string,
+  orgId: string
+): Promise<Task[]> {
+  const { data } = await supabase
+    .from('tasks')
+    .select('*, equipment:equipment(id,tag_id,name)')
+    .eq('org_id', orgId)
+    .or(`assigned_to.eq.${userId},created_by.eq.${userId}`)
+    .order('created_at', { ascending: false });
+  return data || [];
+}
+
+// NEW: Update task status
+export async function updateTask(
+  supabase: SupabaseClient,
+  id: string,
+  updates: Partial<Task>
+): Promise<Task> {
+  const { data, error } = await supabase
+    .from('tasks')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// ── Shared Plant Feed ─────────────────────────────────────────
+
+// NEW: Get unified feed of faults + activities from all org members
+// Returns most recent items first, merged and sorted
+export async function getPlantFeed(
+  supabase: SupabaseClient,
+  limit = 30
+): Promise<FeedItem[]> {
+  const [faultsRes, activitiesRes, shiftsRes] = await Promise.all([
+    supabase
+      .from('faults')
+      .select(`
+        id, title, severity, status, detected_at, created_at, user_id,
+        equipment:equipment(id,tag_id,name),
+        fault_category:fault_categories(id,name,icon,color),
+        profile:profiles(id,full_name,avatar_url,title)
+      `)
+      .order('created_at', { ascending: false })
+      .limit(limit),
+
+    supabase
+      .from('activities')
+      .select(`
+        id, title, status, scheduled_date, created_at, user_id,
+        equipment:equipment(id,tag_id,name),
+        activity_type:activity_types(id,name,icon,color),
+        profile:profiles(id,full_name,avatar_url,title)
+      `)
+      .order('created_at', { ascending: false })
+      .limit(limit),
+
+    supabase
+      .from('shift_logs')
+      .select(`
+        id, shift_type, shift_date, summary, handover_notes, created_at, user_id, logged_by_name,
+        profile:profiles(id,full_name,avatar_url,title)
+      `)
+      .order('created_at', { ascending: false })
+      .limit(10),
+  ]);
+
+  const faultItems: FeedItem[] = (faultsRes.data || []).map(f => ({
+    id:         f.id,
+    type:       'fault' as const,
+    created_at: f.created_at,
+    user_id:    f.user_id,
+    profile:    (f as any).profile,
+    fault:      f as any,
+  }));
+
+  const activityItems: FeedItem[] = (activitiesRes.data || []).map(a => ({
+    id:         a.id,
+    type:       'activity' as const,
+    created_at: a.created_at,
+    user_id:    a.user_id,
+    profile:    (a as any).profile,
+    activity:   a as any,
+  }));
+
+  const shiftItems: FeedItem[] = (shiftsRes.data || []).map(s => ({
+    id:         s.id,
+    type:       'shift_log' as const,
+    created_at: s.created_at,
+    user_id:    s.user_id,
+    profile:    (s as any).profile,
+    shift_log:  s as any,
+  }));
+
+  // Merge and sort by created_at descending
+  return [...faultItems, ...activityItems, ...shiftItems]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, limit);
+}
+
 // ── Stats ─────────────────────────────────────────────────────
-// Aggregate counts for the dashboard KPI cards
+
 export async function getStats(supabase: SupabaseClient, userId: string): Promise<Stats> {
-  // Run all count queries in parallel for speed
   const [eqData, faultData, actData, resCount] = await Promise.all([
     supabase.from('equipment').select('status').eq('user_id', userId),
     supabase.from('faults').select('status,severity,downtime_minutes').eq('user_id', userId),
@@ -337,27 +648,25 @@ export async function getStats(supabase: SupabaseClient, userId: string): Promis
   const eq     = eqData.data    || [];
   const faults = faultData.data || [];
   const acts   = actData.data   || [];
-
-  // Count downtime — sum all downtime_minutes from all faults
   const totalDowntime = faults.reduce((sum, f) => sum + (f.downtime_minutes || 0), 0);
 
   return {
     equipment: {
-      total:           eq.length,
-      operational:     eq.filter(e => e.status === 'operational').length,
-      faulty:          eq.filter(e => e.status === 'faulty').length,
-      maintenance:     eq.filter(e => e.status === 'under_maintenance').length,
-      decommissioned:  eq.filter(e => e.status === 'decommissioned').length,
+      total:          eq.length,
+      operational:    eq.filter(e => e.status === 'operational').length,
+      faulty:         eq.filter(e => e.status === 'faulty').length,
+      maintenance:    eq.filter(e => e.status === 'under_maintenance').length,
+      decommissioned: eq.filter(e => e.status === 'decommissioned').length,
     },
     faults: {
-      total:                faults.length,
-      open:                 faults.filter(f => f.status === 'open').length,
-      under_investigation:  faults.filter(f => f.status === 'under_investigation').length,
-      resolved:             faults.filter(f => f.status === 'resolved').length,
-      recurring:            faults.filter(f => f.status === 'recurring').length,
-      critical:             faults.filter(f => f.severity === 'critical').length,
-      total_downtime:       totalDowntime,
-      resolutions:          resCount.count || 0,
+      total:               faults.length,
+      open:                faults.filter(f => f.status === 'open').length,
+      under_investigation: faults.filter(f => f.status === 'under_investigation').length,
+      resolved:            faults.filter(f => f.status === 'resolved').length,
+      recurring:           faults.filter(f => f.status === 'recurring').length,
+      critical:            faults.filter(f => f.severity === 'critical').length,
+      total_downtime:      totalDowntime,
+      resolutions:         resCount.count || 0,
     },
     activities: {
       total:       acts.length,
@@ -370,7 +679,6 @@ export async function getStats(supabase: SupabaseClient, userId: string): Promis
 }
 
 // ── Seed defaults ─────────────────────────────────────────────
-// Called once on first login to populate categories with sensible defaults
 
 export const DEFAULT_EQUIPMENT_CATEGORIES = [
   { name: 'Transformer',         icon: '🔌', color: '#f0a500' },
@@ -412,18 +720,15 @@ export const DEFAULT_FAULT_CATEGORIES = [
   { name: 'Control Circuit Fault', icon: '🎛',  color: '#bc8cff' },
 ];
 
-// Seed all defaults for a new user (run once on first login)
 export async function seedDefaults(supabase: SupabaseClient, userId: string): Promise<void> {
-  // Check if already seeded by looking for existing categories
   const { data: existing } = await supabase
     .from('categories')
     .select('id')
     .eq('user_id', userId)
     .limit(1);
 
-  if (existing && existing.length > 0) return; // already seeded
+  if (existing && existing.length > 0) return;
 
-  // Insert all defaults in parallel
   await Promise.all([
     supabase.from('categories').insert(
       DEFAULT_EQUIPMENT_CATEGORIES.map(c => ({ ...c, user_id: userId }))
@@ -437,13 +742,8 @@ export async function seedDefaults(supabase: SupabaseClient, userId: string): Pr
   ]);
 }
 
-// ── Alias for getResolutionsForFault (fixes fault detail page) ─
-export async function getResolutions(supabase: SupabaseClient, faultId: string): Promise<Resolution[]> {
-  return getResolutionsForFault(supabase, faultId);
-}
-
 // ── KPI / Appraisal Data ───────────────────────────────────────
-// Returns all data needed for end-of-year KPI appraisal report
+
 export async function getKPIData(supabase: SupabaseClient, userId: string, year: number) {
   const start = `${year}-01-01T00:00:00.000Z`;
   const end   = `${year}-12-31T23:59:59.999Z`;
@@ -468,24 +768,23 @@ export async function getKPIData(supabase: SupabaseClient, userId: string, year:
   const faults     = faultsRes.data     || [];
   const activities = activitiesRes.data || [];
 
-  // Compute summary stats
-  const resolvedFaults    = faults.filter((f: any) => f.status === 'resolved');
-  const criticalResolved  = resolvedFaults.filter((f: any) => f.severity === 'critical');
-  const totalDowntime     = faults.reduce((sum: number, f: any) => sum + (f.downtime_minutes || 0), 0);
-  const completedActs     = activities.filter((a: any) => a.status === 'completed');
+  const resolvedFaults   = faults.filter((f: any) => f.status === 'resolved');
+  const criticalResolved = resolvedFaults.filter((f: any) => f.severity === 'critical');
+  const totalDowntime    = faults.reduce((sum: number, f: any) => sum + (f.downtime_minutes || 0), 0);
+  const completedActs    = activities.filter((a: any) => a.status === 'completed');
 
   return {
     year,
     faults,
     activities,
     stats: {
-      totalFaults:        faults.length,
-      resolvedFaults:     resolvedFaults.length,
-      criticalResolved:   criticalResolved.length,
-      totalDowntimeMins:  totalDowntime,
-      totalActivities:    activities.length,
-      completedActivities:completedActs.length,
-      resolutionRate:     faults.length > 0 ? Math.round((resolvedFaults.length / faults.length) * 100) : 0,
+      totalFaults:         faults.length,
+      resolvedFaults:      resolvedFaults.length,
+      criticalResolved:    criticalResolved.length,
+      totalDowntimeMins:   totalDowntime,
+      totalActivities:     activities.length,
+      completedActivities: completedActs.length,
+      resolutionRate:      faults.length > 0 ? Math.round((resolvedFaults.length / faults.length) * 100) : 0,
     },
   };
 }

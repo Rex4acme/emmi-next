@@ -1,33 +1,34 @@
 'use client';
-// app/dashboard/page.tsx — Main Dashboard
-// KPIs, AI assistant with memory + clear, recent faults/activities, profile photo in header
+// app/dashboard/page.tsx — Updated Dashboard with Feed preview + Tasks widget
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createBrowserClient } from '@/lib/supabase';
-import { getProfile, getFaults, getActivities, getEquipment } from '@/lib/db';
+import { getProfile, getFaults, getActivities, getEquipment, getPlantFeed, getMyTasks } from '@/lib/db';
 import { askQuestion, type ChatMessage } from '@/lib/ai';
 import { fmtRelative, severityDot, statusLabel } from '@/lib/utils';
 import AppShell from '@/components/layout/AppShell';
 import Image from 'next/image';
 import {
   Send, Loader2, Trash2, AlertTriangle,
-  ClipboardList, Cpu, TrendingUp, User, Zap,
+  ClipboardList, Cpu, User, Zap, Rss,
+  CheckSquare, Heart, Users,
 } from 'lucide-react';
+import type { FeedItem, Task } from '@/types';
 
 export default function DashboardPage() {
-  const router   = useRouter();
-  const supabase = createBrowserClient();
+  const router     = useRouter();
+  const supabase   = createBrowserClient();
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  // Data state
   const [profile,    setProfile]    = useState<any>(null);
   const [faults,     setFaults]     = useState<any[]>([]);
   const [activities, setActivities] = useState<any[]>([]);
   const [equipment,  setEquipment]  = useState<any[]>([]);
+  const [feedItems,  setFeedItems]  = useState<FeedItem[]>([]);
+  const [myTasks,    setMyTasks]    = useState<Task[]>([]);
 
-  // AI chat state — full conversation history for memory
   const [chatHistory,  setChatHistory]  = useState<ChatMessage[]>([]);
   const [chatMessages, setChatMessages] = useState<{ role: 'user'|'ai'; text: string; time: string }[]>([]);
   const [question,     setQuestion]     = useState('');
@@ -46,19 +47,28 @@ export default function DashboardPage() {
       ]);
 
       setProfile(p);
-      setFaults(f.slice(0, 5));
-      setActivities(a.slice(0, 5));
+      setFaults(f.slice(0, 4));
+      setActivities(a.slice(0, 3));
       setEquipment(e);
+
+      // Load plant feed + tasks if in an org
+      const profileAny = p as any;
+      if (profileAny?.org_id) {
+        const [feed, tasks] = await Promise.all([
+          getPlantFeed(supabase, 5),
+          getMyTasks(supabase, user.id, profileAny.org_id),
+        ]);
+        setFeedItems(feed);
+        setMyTasks(tasks.filter((t: Task) => ['open', 'in_progress'].includes(t.status)).slice(0, 3));
+      }
     }
     load();
   }, []);
 
-  // Scroll to latest chat message
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages]);
 
-  // ── Send question with full conversation memory ───────────
   async function handleAsk(e: React.FormEvent) {
     e.preventDefault();
     if (!question.trim() || aiLoading) return;
@@ -66,28 +76,21 @@ export default function DashboardPage() {
     const userQ = question.trim();
     setQuestion('');
     setAiLoading(true);
-
-    // Add user message to display
     const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     setChatMessages(prev => [...prev, { role: 'user', text: userQ, time: now }]);
 
     try {
-      // Pass full history for memory — AI remembers previous questions
       const result = await askQuestion(userQ, undefined, chatHistory);
-
       const aiText = result.ok
         ? [
             result.summary,
             result.key_points?.length ? '• ' + result.key_points.join('\n• ') : '',
             result.safety_note ? '⚠ ' + result.safety_note : '',
-            result.next_step ? '→ ' + result.next_step : '',
+            result.next_step   ? '→ ' + result.next_step   : '',
           ].filter(Boolean).join('\n\n')
         : result.error || 'AI unavailable. Please try again.';
 
-      // Update display
       setChatMessages(prev => [...prev, { role: 'ai', text: aiText, time: now }]);
-
-      // Update conversation history for memory on next request
       setChatHistory(prev => [
         ...prev,
         { role: 'user',      content: userQ  },
@@ -99,30 +102,27 @@ export default function DashboardPage() {
     setAiLoading(false);
   }
 
-  // ── Clear chat ────────────────────────────────────────────
   function clearChat() {
     setChatMessages([]);
     setChatHistory([]);
   }
 
-  // KPI calculations
   const openFaults     = faults.filter(f => f.status === 'open').length;
   const criticalFaults = faults.filter(f => f.severity === 'critical').length;
   const faultyEquip    = equipment.filter(e => e.status === 'faulty').length;
   const pendingActs    = activities.filter(a => a.status === 'planned').length;
 
   const kpis = [
-    { label: 'Open Faults',     value: openFaults,     icon: <AlertTriangle size={16}/>, color: 'var(--red)',   href: '/faults' },
-    { label: 'Critical',        value: criticalFaults, icon: <Zap size={16}/>,           color: '#ff4444',      href: '/faults' },
-    { label: 'Faulty Equipment',value: faultyEquip,    icon: <Cpu size={16}/>,           color: 'var(--amber)', href: '/equipment' },
-    { label: 'Pending Tasks',   value: pendingActs,    icon: <ClipboardList size={16}/>, color: 'var(--blue)',  href: '/activities' },
+    { label: 'Open Faults',      value: openFaults,     icon: <AlertTriangle size={16}/>, color: 'var(--red)',   href: '/faults'     },
+    { label: 'Critical',         value: criticalFaults, icon: <Zap size={16}/>,           color: '#ff4444',      href: '/faults'     },
+    { label: 'Faulty Equipment', value: faultyEquip,    icon: <Cpu size={16}/>,           color: 'var(--amber)', href: '/equipment'  },
+    { label: 'Pending Tasks',    value: pendingActs,    icon: <ClipboardList size={16}/>, color: 'var(--blue)',  href: '/activities' },
   ];
 
   return (
     <AppShell
       title="Dashboard"
       action={
-        // Profile photo in top right of header
         <Link href="/profile">
           <div className="w-9 h-9 rounded-full overflow-hidden flex items-center justify-center flex-shrink-0"
             style={{ border: '2px solid var(--amber)', background: 'var(--surface)' }}>
@@ -142,6 +142,11 @@ export default function DashboardPage() {
         </h2>
         <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
           {profile?.organization || 'EMMI Engineering Logbook'}
+          {(profile as any)?.org_id && (
+            <span className="ml-2 font-mono" style={{ color: 'var(--amber)' }}>
+              · Plant {(profile as any).org_id}
+            </span>
+          )}
         </p>
       </div>
 
@@ -163,9 +168,99 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* ── AI Assistant ──────────────────────────────────────── */}
+      {/* Quick actions row */}
+      <div className="grid grid-cols-3 gap-2 mb-5">
+        <Link href="/feed">
+          <div className="card flex flex-col items-center gap-1.5 py-3 text-center hover:border-white/20 transition-all">
+            <Rss size={18} style={{ color: 'var(--amber)' }}/>
+            <span className="text-xs font-bold" style={{ color: 'var(--text-2)' }}>Plant Feed</span>
+          </div>
+        </Link>
+        <Link href="/tasks">
+          <div className="card flex flex-col items-center gap-1.5 py-3 text-center hover:border-white/20 transition-all">
+            <CheckSquare size={18} style={{ color: 'var(--blue)' }}/>
+            <span className="text-xs font-bold" style={{ color: 'var(--text-2)' }}>Tasks</span>
+            {myTasks.length > 0 && (
+              <span className="text-xs px-1.5 py-0.5 rounded-full font-bold"
+                style={{ background: 'var(--blue)', color: '#fff', fontSize: 9 }}>
+                {myTasks.length}
+              </span>
+            )}
+          </div>
+        </Link>
+        <Link href="/health">
+          <div className="card flex flex-col items-center gap-1.5 py-3 text-center hover:border-white/20 transition-all">
+            <Heart size={18} style={{ color: 'var(--green)' }}/>
+            <span className="text-xs font-bold" style={{ color: 'var(--text-2)' }}>Health</span>
+          </div>
+        </Link>
+      </div>
+
+      {/* Plant feed preview */}
+      {feedItems.length > 0 && (
+        <div className="mb-5">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-bold">Plant Feed</h3>
+              <div className="w-2 h-2 rounded-full animate-pulse" style={{ background: 'var(--green)' }}/>
+            </div>
+            <Link href="/feed" className="text-xs" style={{ color: 'var(--amber)' }}>View all →</Link>
+          </div>
+          <div className="space-y-2">
+            {feedItems.slice(0, 3).map(item => (
+              <div key={`${item.type}-${item.id}`} className="card" style={{ padding: '10px 12px' }}>
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                    <Users size={12} style={{ color: 'var(--amber)' }}/>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold truncate" style={{ color: 'var(--text)' }}>
+                      {item.profile?.full_name || 'Engineer'}{' '}
+                      <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>
+                        {item.type === 'fault' ? 'logged a fault' : item.type === 'activity' ? 'logged an activity' : 'submitted a shift log'}
+                      </span>
+                    </p>
+                    <p className="text-xs truncate mt-0.5" style={{ color: 'var(--text-3)' }}>
+                      {item.fault?.title || item.activity?.title || item.shift_log?.summary || '—'}
+                    </p>
+                  </div>
+                  <span className="text-xs flex-shrink-0" style={{ color: 'var(--text-3)' }}>
+                    {fmtRelative(item.created_at)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* My Tasks */}
+      {myTasks.length > 0 && (
+        <div className="mb-5">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold">My Tasks</h3>
+            <Link href="/tasks" className="text-xs" style={{ color: 'var(--amber)' }}>View all →</Link>
+          </div>
+          <div className="space-y-2">
+            {myTasks.map(task => (
+              <Link key={task.id} href="/tasks">
+                <div className="card flex items-center gap-3 hover:border-white/20 transition-all" style={{ padding: '10px 12px' }}>
+                  <CheckSquare size={14} style={{ color: task.priority === 'critical' ? 'var(--red)' : task.priority === 'high' ? 'var(--amber)' : 'var(--blue)', flexShrink: 0 }}/>
+                  <p className="text-xs font-semibold flex-1 truncate">{task.title}</p>
+                  <span className="text-xs flex-shrink-0 capitalize"
+                    style={{ color: task.status === 'in_progress' ? 'var(--amber)' : 'var(--text-3)' }}>
+                    {task.status.replace('_', ' ')}
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* AI Assistant */}
       <div className="card mb-5" style={{ border: '1px solid rgba(163,113,247,0.2)' }}>
-        {/* Header */}
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg flex items-center justify-center"
@@ -177,7 +272,6 @@ export default function DashboardPage() {
               Pollinations AI
             </span>
           </div>
-          {/* Clear chat button */}
           {chatMessages.length > 0 && (
             <button onClick={clearChat}
               className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs"
@@ -187,7 +281,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Chat messages */}
         {chatMessages.length > 0 && (
           <div className="mb-3 space-y-3 max-h-80 overflow-y-auto pr-1">
             {chatMessages.map((msg, i) => (
@@ -216,14 +309,12 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* No messages yet */}
         {chatMessages.length === 0 && !aiLoading && (
           <p className="text-xs mb-3 text-center py-2" style={{ color: 'var(--text-3)' }}>
             Ask any electrical engineering question — I remember our conversation.
           </p>
         )}
 
-        {/* Input */}
         <form onSubmit={handleAsk} className="flex gap-2">
           <input
             value={question}
@@ -299,7 +390,6 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
-
     </AppShell>
   );
 }

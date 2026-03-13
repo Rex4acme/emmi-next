@@ -2,67 +2,84 @@
 // These match the Supabase database table columns exactly
 
 // ── Engineer Profile ──────────────────────────────────────────
-// Stored in the 'profiles' table, one row per authenticated user
 export interface Profile {
-  id: string;               // Supabase auth user ID (UUID)
-  full_name: string;        // e.g. "Engr. Eze Onyebuchi"
-  title?: string;           // e.g. "Senior Electrical Engineer"
-  employee_id?: string;     // e.g. "ENG-001"
-  organization?: string;    // Company name
-  department?: string;      // e.g. "Electrical Engineering"
+  id: string;
+  full_name: string;
+  title?: string;
+  employee_id?: string;
+  organization?: string;
+  department?: string;
   email?: string;
   phone?: string;
-  avatar_url?: string;      // URL to photo in Supabase Storage
-  certifications?: string[];// e.g. ["PMP", "COREN", "IEEE"]
+  avatar_url?: string;
+  certifications?: string[];
+  // NEW: org grouping + role
+  org_id?: string;           // e.g. "PLANT-001" — links engineers in same plant
+  role?: UserRole;           // 'engineer' | 'senior_engineer' | 'admin'
   created_at?: string;
   updated_at?: string;
 }
 
+export type UserRole = 'engineer' | 'senior_engineer' | 'admin';
+
 // ── Equipment Category ────────────────────────────────────────
-// e.g. "Transformer", "Generator", "Switchgear"
 export interface Category {
   id: string;
   user_id: string;
-  name: string;             // Category name
-  icon: string;             // Emoji icon e.g. "⚡"
-  color?: string;           // Hex colour for UI
+  name: string;
+  icon: string;
+  color?: string;
   created_at?: string;
 }
 
 // ── Equipment ────────────────────────────────────────────────
-// A physical piece of electrical equipment being tracked
 export interface Equipment {
   id: string;
   user_id: string;
-  tag_id: string;           // e.g. "TR-001" — unique tag
-  name: string;             // Full name e.g. "Main Power Transformer"
-  category_id?: string;     // FK → categories.id
-  category?: Category;      // Joined relation
+  tag_id: string;
+  name: string;
+  category_id?: string;
+  category?: Category;
   status: EquipmentStatus;
-  location?: string;        // e.g. "Substation A — Bay 1"
-  area?: string;            // e.g. "Zone A"
+  location?: string;
+  area?: string;
   manufacturer?: string;
   model?: string;
   serial_number?: string;
-  voltage_rating?: string;  // e.g. "11kV / 415V"
-  power_rating?: string;    // e.g. "2.5 MVA"
+  voltage_rating?: string;
+  power_rating?: string;
   installation_date?: string;
   warranty_expiry?: string;
   notes?: string;
-  photo_urls?: string[];    // Array of photo URLs from Supabase Storage
+  photo_urls?: string[];
+  // NEW: joined health score
+  health?: EquipmentHealth;
   created_at?: string;
   updated_at?: string;
 }
 
-// Equipment operational status values
 export type EquipmentStatus =
   | 'operational'
   | 'faulty'
   | 'under_maintenance'
   | 'decommissioned';
 
+// ── Equipment Health Score ────────────────────────────────────
+export interface EquipmentHealth {
+  id: string;
+  equipment_id: string;
+  user_id: string;
+  health_score: number;       // 0–100
+  status: HealthStatus;       // 'healthy' | 'warning' | 'critical'
+  fault_count_30d: number;
+  downtime_30d: number;       // minutes
+  last_fault_at?: string;
+  computed_at: string;
+}
+
+export type HealthStatus = 'healthy' | 'warning' | 'critical';
+
 // ── Activity Type ─────────────────────────────────────────────
-// Seeded categories like "Preventive Maintenance", "Inspection" etc.
 export interface ActivityType {
   id: string;
   user_id: string;
@@ -73,32 +90,33 @@ export interface ActivityType {
 }
 
 // ── Activity ──────────────────────────────────────────────────
-// A maintenance task or inspection — planned or completed
 export interface Activity {
   id: string;
   user_id: string;
   title: string;
   equipment_id?: string;
-  equipment?: Equipment;    // Joined relation
+  equipment?: Equipment;
   activity_type_id?: string;
-  activity_type?: ActivityType; // Joined relation
+  activity_type?: ActivityType;
   status: ActivityStatus;
   scheduled_date?: string;
-  start_time?: string;      // ISO datetime when work started
-  end_time?: string;        // ISO datetime when work ended
+  start_time?: string;
+  end_time?: string;
   duration_minutes?: number;
-  work_order_ref?: string;  // e.g. "WO-2024-001"
-  permit_ref?: string;      // Permit to Work reference
-  description?: string;     // Scope of work
-  findings?: string;        // Observations during work
-  actions_taken?: string;   // Work actually performed
-  safety_notes?: string;    // LOTO, PPE, PTW notes
+  work_order_ref?: string;
+  permit_ref?: string;
+  description?: string;
+  findings?: string;
+  actions_taken?: string;
+  safety_notes?: string;
   recommendations?: string;
-  colleagues?: string[];    // Names of other engineers present
-  tools_used?: string[];    // Equipment/instruments used
+  colleagues?: string[];
+  tools_used?: string[];
   parts_replaced?: PartItem[];
-  photo_urls?: string[];    // Photos from local device or camera
-  signature_url?: string;   // Sign-off photo
+  photo_urls?: string[];
+  signature_url?: string;
+  // NEW: joined profile for feed display
+  profile?: Pick<Profile, 'id' | 'full_name' | 'avatar_url' | 'title'>;
   created_at?: string;
   updated_at?: string;
 }
@@ -106,7 +124,6 @@ export interface Activity {
 export type ActivityStatus = 'planned' | 'in_progress' | 'completed' | 'cancelled';
 
 // ── Fault Category ────────────────────────────────────────────
-// e.g. "Protection Relay", "Insulation Failure", "Overheating"
 export interface FaultCategory {
   id: string;
   user_id: string;
@@ -117,32 +134,33 @@ export interface FaultCategory {
 }
 
 // ── Fault ─────────────────────────────────────────────────────
-// A recorded equipment fault or failure
 export interface Fault {
   id: string;
   user_id: string;
-  fault_code?: string;       // Auto-generated e.g. "FLT-TR001-001"
-  title: string;             // Short description
+  fault_code?: string;
+  title: string;
   equipment_id?: string;
-  equipment?: Equipment;     // Joined relation
+  equipment?: Equipment;
   fault_category_id?: string;
-  fault_category?: FaultCategory; // Joined relation
-  activity_id?: string;      // Linked maintenance activity if any
+  fault_category?: FaultCategory;
+  activity_id?: string;
   severity: FaultSeverity;
   status: FaultStatus;
-  detected_at: string;       // ISO datetime fault was first observed
-  detected_by?: string;      // Name of person who detected it
-  detection_method?: string; // How it was found
-  fault_location?: string;   // Physical location on equipment
-  affected_circuit?: string; // Circuit/feeder affected
+  detected_at: string;
+  detected_by?: string;
+  detection_method?: string;
+  fault_location?: string;
+  affected_circuit?: string;
   safety_impact?: SafetyImpact;
-  downtime_minutes?: number; // Total downtime caused
-  description?: string;      // Full narrative
-  symptoms?: string[];       // List of observed symptoms
-  measurements?: Record<string, string>; // Key-value readings
-  is_recurring?: boolean;    // Has this fault occurred before?
-  photo_urls?: string[];     // Photos from local device or camera
-  reminder_sent?: boolean;   // Has the 7am reminder been shown?
+  downtime_minutes?: number;
+  description?: string;
+  symptoms?: string[];
+  measurements?: Record<string, string>;
+  is_recurring?: boolean;
+  photo_urls?: string[];
+  reminder_sent?: boolean;
+  // NEW: joined profile for feed display
+  profile?: Pick<Profile, 'id' | 'full_name' | 'avatar_url' | 'title'>;
   created_at?: string;
   updated_at?: string;
 }
@@ -152,35 +170,86 @@ export type FaultStatus   = 'open' | 'under_investigation' | 'resolved' | 'recur
 export type SafetyImpact  = 'none' | 'minor' | 'moderate' | 'severe';
 
 // ── Resolution ───────────────────────────────────────────────
-// A logged fix/repair for a fault — one fault can have multiple resolutions
 export interface Resolution {
   id: string;
   user_id: string;
-  fault_id: string;          // FK → faults.id
-  fault?: Fault;             // Joined relation
-  title: string;             // Brief summary of what was done
+  fault_id: string;
+  fault?: Fault;
+  title: string;
   outcome: ResolutionOutcome;
-  root_cause?: string;       // Root cause analysis narrative
-  root_cause_category?: string; // e.g. "wear", "installation", "overload"
-  actions_taken?: string;    // Detailed repair steps
-  test_results?: string;     // Post-repair test readings
-  recommendations?: string;  // Future prevention advice
-  resolved_at: string;       // ISO datetime of resolution
+  root_cause?: string;
+  root_cause_category?: string;
+  actions_taken?: string;
+  test_results?: string;
+  recommendations?: string;
+  resolved_at: string;
   duration_minutes?: number;
   resolved_by?: string;
   verified_by?: string;
   colleagues?: string[];
   tools_used?: string[];
   parts_replaced?: PartItem[];
-  signature_url?: string;    // Engineer sign-off photo
+  signature_url?: string;
   photo_urls?: string[];
   created_at?: string;
 }
 
 export type ResolutionOutcome = 'resolved' | 'partial' | 'deferred' | 'not_found';
 
+// ── Shift Log ─────────────────────────────────────────────────
+// NEW: Shift handover log — engineers log events at end of shift
+export interface ShiftLog {
+  id: string;
+  user_id: string;
+  org_id: string;
+  shift_type: ShiftType;
+  shift_date: string;           // YYYY-MM-DD
+  summary?: string;             // Overall shift summary
+  events?: ShiftEvent[];        // List of events during the shift
+  open_issues?: string[];       // Unresolved items for next shift
+  handover_notes?: string;      // Direct message to next shift
+  logged_by_name?: string;      // Engineer's name (denormalized)
+  // joined profile
+  profile?: Pick<Profile, 'id' | 'full_name' | 'avatar_url' | 'title'>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type ShiftType = 'day' | 'night' | 'afternoon';
+
+export interface ShiftEvent {
+  time: string;                 // e.g. "14:23"
+  description: string;          // e.g. "Motor M17 tripped — overload"
+  equipment_tag?: string;       // e.g. "M-017"
+}
+
+// ── Maintenance Task ──────────────────────────────────────────
+// NEW: Tasks assigned between engineers
+export interface Task {
+  id: string;
+  org_id: string;
+  created_by: string;
+  assigned_to?: string;
+  equipment_id?: string;
+  equipment?: Pick<Equipment, 'id' | 'tag_id' | 'name'>;
+  title: string;
+  description?: string;
+  priority: TaskPriority;
+  status: TaskStatus;
+  due_date?: string;
+  completed_at?: string;
+  assigned_to_name?: string;
+  // joined profiles
+  creator_profile?: Pick<Profile, 'id' | 'full_name' | 'avatar_url'>;
+  assignee_profile?: Pick<Profile, 'id' | 'full_name' | 'avatar_url'>;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
+export type TaskStatus   = 'open' | 'in_progress' | 'completed' | 'cancelled';
+
 // ── Shared sub-types ─────────────────────────────────────────
-// A replaced/used part with optional quantity and part number
 export interface PartItem {
   name: string;
   qty?: string;
@@ -188,7 +257,6 @@ export interface PartItem {
 }
 
 // ── Dashboard stats ───────────────────────────────────────────
-// Aggregated counts returned by lib/db.ts getStats()
 export interface Stats {
   equipment: {
     total: number;
@@ -204,7 +272,7 @@ export interface Stats {
     resolved: number;
     recurring: number;
     critical: number;
-    total_downtime: number; // minutes
+    total_downtime: number;
     resolutions: number;
   };
   activities: {
@@ -216,8 +284,20 @@ export interface Stats {
   };
 }
 
+// ── Feed item ─────────────────────────────────────────────────
+// NEW: Unified feed item (fault or activity from any org member)
+export interface FeedItem {
+  id: string;
+  type: 'fault' | 'activity' | 'shift_log';
+  created_at: string;
+  user_id: string;
+  profile?: Pick<Profile, 'id' | 'full_name' | 'avatar_url' | 'title'>;
+  fault?: Fault;
+  activity?: Activity;
+  shift_log?: ShiftLog;
+}
+
 // ── AI response types ─────────────────────────────────────────
-// Shape of parsed response from /api/ai endpoint
 export interface AIFaultAnalysis {
   ok: boolean;
   error?: string;
