@@ -10,7 +10,7 @@ import AppShell from '@/components/layout/AppShell';
 import Image from 'next/image';
 import {
   Save, Loader2, LogOut, Camera, FolderOpen,
-  User, Edit2, X, Check, Users, Copy,
+  User, Edit2, X, Check, Users, Copy, UserPlus, Send,
 } from 'lucide-react';
 
 export default function ProfilePage() {
@@ -27,6 +27,13 @@ export default function ProfilePage() {
   const [editing,   setEditing]   = useState(false);
   const [copied,    setCopied]    = useState(false);
   const [stored,    setStored]    = useState<any>({});
+
+  // Invite colleague state
+  const [showInvite,   setShowInvite]   = useState(false);
+  const [inviteEmail,  setInviteEmail]  = useState('');
+  const [inviteSending,setInviteSending]= useState(false);
+  const [inviteDone,   setInviteDone]   = useState(false);
+  const [inviteError,  setInviteError]  = useState('');
 
   const [fullName,       setFullName]       = useState('');
   const [title,          setTitle]          = useState('');
@@ -144,6 +151,33 @@ export default function ProfilePage() {
     });
   }
 
+  async function sendInvite(e: React.FormEvent) {
+    e.preventDefault();
+    if (!inviteEmail.trim() || !orgId) return;
+    setInviteSending(true); setInviteError('');
+    try {
+      const res = await fetch('/api/invite', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          recipientEmail: inviteEmail.trim(),
+          orgId:          orgId.toUpperCase(),
+          inviterName:    fullName || 'A colleague',
+          plantName:      organization || orgId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send invite');
+      setInviteDone(true);
+      setInviteEmail('');
+      setTimeout(() => { setInviteDone(false); setShowInvite(false); }, 3000);
+    } catch (err: any) {
+      setInviteError(err.message);
+    } finally {
+      setInviteSending(false);
+    }
+  }
+
   function ViewField({ label, value }: { label: string; value?: string }) {
     if (!value) return null;
     return (
@@ -259,6 +293,7 @@ export default function ProfilePage() {
               </span>
             )}
           </div>
+
           {!orgId ? (
             <div>
               <p className="text-xs leading-relaxed mb-3" style={{ color: 'var(--text-2)' }}>
@@ -275,7 +310,8 @@ export default function ProfilePage() {
             </div>
           ) : (
             <div>
-              <div className="flex items-center gap-2 mb-1.5">
+              {/* Plant ID display + copy */}
+              <div className="flex items-center gap-2 mb-2">
                 <div className="flex-1 px-3 py-2 rounded-lg font-mono text-sm font-bold"
                   style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--amber)' }}>
                   {orgId.toUpperCase()}
@@ -286,13 +322,67 @@ export default function ProfilePage() {
                   <Copy size={12}/> {copied ? 'Copied!' : 'Copy'}
                 </button>
               </div>
-              <p className="text-xs" style={{ color: 'var(--text-3)' }}>
-                Share with colleagues — they type this same ID in their own profile to join your plant.
-              </p>
+
               {role && (
-                <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
+                <p className="text-xs mb-3" style={{ color: 'var(--text-3)' }}>
                   Role: <span className="font-bold" style={{ color: 'var(--text-2)' }}>{roleLabel[role] || role}</span>
                 </p>
+              )}
+
+              {/* Invite colleague button */}
+              {!showInvite ? (
+                <button
+                  onClick={() => { setShowInvite(true); setInviteError(''); setInviteDone(false); }}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-bold w-full justify-center"
+                  style={{ background: 'rgba(74,158,255,0.1)', color: 'var(--blue)', border: '1px solid rgba(74,158,255,0.25)' }}>
+                  <UserPlus size={13}/> Invite Colleague to Plant
+                </button>
+              ) : (
+                // Inline invite form
+                <div className="mt-1" style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-bold" style={{ color: 'var(--blue)' }}>
+                      <UserPlus size={11} style={{ display: 'inline', marginRight: 4 }}/>
+                      Invite to {orgId.toUpperCase()}
+                    </p>
+                    <button onClick={() => { setShowInvite(false); setInviteError(''); }}
+                      style={{ color: 'var(--text-3)', background: 'none', border: 'none', cursor: 'pointer', padding: 2 }}>
+                      <X size={13}/>
+                    </button>
+                  </div>
+
+                  {inviteDone ? (
+                    <div className="flex items-center gap-2 p-2.5 rounded-lg text-xs"
+                      style={{ background: 'rgba(52,208,88,0.1)', color: 'var(--green)', border: '1px solid rgba(52,208,88,0.2)' }}>
+                      <Check size={13}/> Invite sent! They'll receive an email with a signup link.
+                    </div>
+                  ) : (
+                    <form onSubmit={sendInvite} className="flex gap-2">
+                      <input
+                        type="email"
+                        value={inviteEmail}
+                        onChange={e => setInviteEmail(e.target.value)}
+                        placeholder="colleague@company.com"
+                        required
+                        className="flex-1 form-input"
+                        style={{ fontSize: 12 }}
+                      />
+                      <button type="submit" disabled={inviteSending || !inviteEmail.trim()}
+                        className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold flex-shrink-0"
+                        style={{ background: inviteSending ? 'rgba(74,158,255,0.3)' : 'var(--blue)', color: '#fff' }}>
+                        {inviteSending ? <Loader2 size={12} className="animate-spin"/> : <Send size={12}/>}
+                        {inviteSending ? '' : 'Send'}
+                      </button>
+                    </form>
+                  )}
+
+                  {inviteError && (
+                    <p className="text-xs mt-1.5" style={{ color: 'var(--red)' }}>⚠ {inviteError}</p>
+                  )}
+                  <p className="text-xs mt-1.5" style={{ color: 'var(--text-3)' }}>
+                    They'll get an email with a signup link. Plant ID is pre-filled automatically.
+                  </p>
+                </div>
               )}
             </div>
           )}

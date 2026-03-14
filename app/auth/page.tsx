@@ -1,16 +1,19 @@
 'use client';
-// app/auth/page.tsx — Login / Sign-up page
+// app/auth/page.tsx
+// Added: "Forgot password?" link that triggers Supabase password reset email.
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createBrowserClient } from '@/lib/supabase';
-import { Zap, AlertCircle, Loader2 } from 'lucide-react';
+import { Zap, AlertCircle, Loader2, CheckCircle } from 'lucide-react';
+
+type Mode = 'signin' | 'signup' | 'forgot';
 
 export default function AuthPage() {
   const router   = useRouter();
   const supabase = createBrowserClient();
 
-  const [mode,     setMode]     = useState<'signin' | 'signup'>('signin');
+  const [mode,     setMode]     = useState<Mode>('signin');
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [name,     setName]     = useState('');
@@ -18,9 +21,10 @@ export default function AuthPage() {
   const [error,    setError]    = useState('');
   const [message,  setMessage]  = useState('');
 
+  function switchMode(m: Mode) { setMode(m); setError(''); setMessage(''); }
+
   async function handleGoogleSignIn() {
-    setLoading(true);
-    setError('');
+    setLoading(true); setError('');
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo: `${window.location.origin}/auth/callback` },
@@ -28,11 +32,23 @@ export default function AuthPage() {
     if (error) { setError(error.message); setLoading(false); }
   }
 
+  // ── Forgot password — sends reset email via Supabase ─────
+  async function handleForgotPassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (!email.trim()) { setError('Please enter your email address.'); return; }
+    setLoading(true); setError('');
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}/auth/reset-password`,
+    });
+    setLoading(false);
+    if (error) { setError(error.message); return; }
+    setMessage('Password reset link sent. Check your email inbox (and spam folder).');
+  }
+
+  // ── Sign in / Sign up ────────────────────────────────────
   async function handleEmailAuth(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
-    setError('');
-    setMessage('');
+    setLoading(true); setError(''); setMessage('');
 
     if (mode === 'signup') {
       const { error } = await supabase.auth.signUp({
@@ -43,7 +59,7 @@ export default function AuthPage() {
         },
       });
       if (error) setError(error.message);
-      else setMessage('Check your email for a confirmation link. Then sign in.');
+      else setMessage('Check your email for a confirmation link, then sign in.');
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) setError(error.message);
@@ -52,32 +68,105 @@ export default function AuthPage() {
     setLoading(false);
   }
 
+  // ── Forgot password view ─────────────────────────────────
+  if (mode === 'forgot') {
+    return (
+      <div className="min-h-dvh bg-base flex flex-col items-center justify-center p-4">
+        <div className="fixed inset-0 pointer-events-none"
+          style={{ background: 'radial-gradient(ellipse 600px 400px at 50% 30%, rgba(240,165,0,0.06) 0%, transparent 70%)' }}/>
+
+        <div className="w-full max-w-sm relative z-10">
+          {/* Logo */}
+          <div className="text-center mb-10">
+            <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4"
+              style={{ background: 'rgba(240,165,0,0.1)', border: '1px solid rgba(240,165,0,0.2)' }}>
+              <Zap size={32} style={{ color: 'var(--amber)' }} strokeWidth={2.5}/>
+            </div>
+            <h1 className="text-3xl font-bold font-display" style={{ color: 'var(--amber)' }}>EMMI</h1>
+            <p className="text-sm mt-1" style={{ color: 'var(--text-2)' }}>Electrical Maintenance Intelligence</p>
+          </div>
+
+          <div className="card" style={{ padding: 28 }}>
+            <h2 className="text-base font-bold mb-1" style={{ color: 'var(--text)' }}>Reset your password</h2>
+            <p className="text-xs mb-5" style={{ color: 'var(--text-2)' }}>
+              Enter your email and we'll send you a link to set a new password.
+            </p>
+
+            {message ? (
+              // Success state
+              <div>
+                <div className="flex items-start gap-3 p-4 rounded-xl mb-5"
+                  style={{ background: 'rgba(52,208,88,0.08)', border: '1px solid rgba(52,208,88,0.25)' }}>
+                  <CheckCircle size={18} style={{ color: 'var(--green)', flexShrink: 0, marginTop: 1 }}/>
+                  <div>
+                    <p className="text-sm font-semibold mb-0.5" style={{ color: 'var(--green)' }}>Email sent</p>
+                    <p className="text-xs" style={{ color: 'var(--text-2)' }}>{message}</p>
+                  </div>
+                </div>
+                <button onClick={() => switchMode('signin')}
+                  className="w-full py-3 rounded-lg text-sm font-bold"
+                  style={{ background: 'var(--amber)', color: '#000' }}>
+                  Back to Sign In
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleForgotPassword} className="space-y-3">
+                <div>
+                  <label className="form-label req">Email</label>
+                  <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                    placeholder="you@company.com" required className="form-input"/>
+                </div>
+
+                {error && (
+                  <div className="flex items-start gap-2 p-3 rounded-lg text-sm"
+                    style={{ background: 'rgba(248,81,73,0.1)', color: 'var(--red)', border: '1px solid rgba(248,81,73,0.2)' }}>
+                    <AlertCircle size={15} className="mt-0.5 flex-shrink-0"/>
+                    <span>{error}</span>
+                  </div>
+                )}
+
+                <button type="submit" disabled={loading}
+                  className="w-full py-3 rounded-lg text-sm font-bold flex items-center justify-center gap-2"
+                  style={{ background: loading ? 'rgba(240,165,0,0.5)' : 'var(--amber)', color: '#000' }}>
+                  {loading && <Loader2 size={15} className="animate-spin"/>}
+                  Send Reset Link
+                </button>
+
+                <button type="button" onClick={() => switchMode('signin')}
+                  className="w-full py-2.5 rounded-lg text-sm font-medium"
+                  style={{ background: 'transparent', color: 'var(--text-2)', border: '1px solid var(--border)' }}>
+                  ← Back to Sign In
+                </button>
+              </form>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Sign in / Sign up view ───────────────────────────────
   return (
     <div className="min-h-dvh bg-base flex flex-col items-center justify-center p-4">
-      <div
-        className="fixed inset-0 pointer-events-none"
-        style={{ background: 'radial-gradient(ellipse 600px 400px at 50% 30%, rgba(240,165,0,0.06) 0%, transparent 70%)' }}
-      />
+      <div className="fixed inset-0 pointer-events-none"
+        style={{ background: 'radial-gradient(ellipse 600px 400px at 50% 30%, rgba(240,165,0,0.06) 0%, transparent 70%)' }}/>
 
       <div className="w-full max-w-sm relative z-10">
-
         {/* Logo */}
         <div className="text-center mb-10">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4"
             style={{ background: 'rgba(240,165,0,0.1)', border: '1px solid rgba(240,165,0,0.2)' }}>
-            <Zap size={32} style={{ color: 'var(--amber)' }} strokeWidth={2.5} />
+            <Zap size={32} style={{ color: 'var(--amber)' }} strokeWidth={2.5}/>
           </div>
           <h1 className="text-3xl font-bold font-display" style={{ color: 'var(--amber)' }}>EMMI</h1>
           <p className="text-sm mt-1" style={{ color: 'var(--text-2)' }}>Electrical Maintenance Intelligence</p>
         </div>
 
-        {/* Card */}
-        <div className="card" style={{ padding: '28px' }}>
-
+        <div className="card" style={{ padding: 28 }}>
           {/* Mode toggle */}
           <div className="flex mb-6 p-1 rounded-lg" style={{ background: 'var(--surface)' }}>
             {(['signin', 'signup'] as const).map(m => (
-              <button key={m} onClick={() => { setMode(m); setError(''); setMessage(''); }}
+              <button key={m} onClick={() => switchMode(m)}
                 className="flex-1 py-2 rounded-md text-sm font-semibold transition-all"
                 style={{
                   background: mode === m ? 'var(--card)' : 'transparent',
@@ -89,7 +178,7 @@ export default function AuthPage() {
             ))}
           </div>
 
-          {/* Google button */}
+          {/* Google */}
           <button onClick={handleGoogleSignIn} disabled={loading}
             className="w-full flex items-center justify-center gap-3 py-3 rounded-lg text-sm font-semibold transition-all mb-4"
             style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text)' }}>
@@ -109,15 +198,13 @@ export default function AuthPage() {
             <div className="flex-1 h-px" style={{ background: 'var(--border)' }}/>
           </div>
 
-          {/* Form — NO icons inside inputs to avoid overlap */}
+          {/* Form */}
           <form onSubmit={handleEmailAuth} className="space-y-3">
-
             {mode === 'signup' && (
               <div>
                 <label className="form-label req">Full Name</label>
                 <input type="text" value={name} onChange={e => setName(e.target.value)}
-                  placeholder="Engr. Your Name" required={mode === 'signup'}
-                  className="form-input"/>
+                  placeholder="Engr. Your Name" required={mode === 'signup'} className="form-input"/>
               </div>
             )}
 
@@ -128,7 +215,17 @@ export default function AuthPage() {
             </div>
 
             <div>
-              <label className="form-label req">Password</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="form-label" style={{ marginBottom: 0 }}>Password <span style={{ color: 'var(--red)' }}>*</span></label>
+                {/* Forgot password link — only visible on sign in */}
+                {mode === 'signin' && (
+                  <button type="button" onClick={() => switchMode('forgot')}
+                    className="text-xs"
+                    style={{ color: 'var(--amber)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                    Forgot password?
+                  </button>
+                )}
+              </div>
               <input type="password" value={password} onChange={e => setPassword(e.target.value)}
                 placeholder={mode === 'signup' ? 'Min. 6 characters' : '••••••••'}
                 required minLength={6} className="form-input"/>
@@ -141,7 +238,6 @@ export default function AuthPage() {
                 <span>{error}</span>
               </div>
             )}
-
             {message && (
               <div className="p-3 rounded-lg text-sm"
                 style={{ background: 'rgba(52,208,88,0.1)', color: 'var(--green)', border: '1px solid rgba(52,208,88,0.2)' }}>
