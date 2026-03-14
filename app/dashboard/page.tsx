@@ -85,16 +85,17 @@ function OnlineWidget({
         style={{
           display:      'flex',
           alignItems:   'center',
-          gap:          6,
+          gap:          5,
           background:   'rgba(52,208,88,0.08)',
           border:       '1px solid rgba(52,208,88,0.22)',
           borderRadius: 999,
-          padding:      '5px 10px 5px 6px',
+          padding:      '3px 8px 3px 5px',
           cursor:       'pointer',
+          flexShrink:   0,
         }}
       >
         {/* Pulsing green dot */}
-        <div style={{ width: 7, height: 7, borderRadius: '50%', background: '#34d058', flexShrink: 0, animation: 'pulse 2s ease-in-out infinite' }}/>
+        <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#34d058', flexShrink: 0, animation: 'pulse 2s ease-in-out infinite' }}/>
 
         {/* Stacked avatar circles */}
         <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -103,12 +104,12 @@ function OnlineWidget({
               key={u.userId}
               title={u.userId === currentUserId ? 'You' : u.name}
               style={{
-                width: 24, height: 24, borderRadius: '50%',
-                border: `2px solid ${u.userId === currentUserId ? 'var(--amber)' : '#34d058'}`,
+                width: 20, height: 20, borderRadius: '50%',
+                border: `1.5px solid ${u.userId === currentUserId ? 'var(--amber)' : '#34d058'}`,
                 background: 'var(--surface)',
                 overflow: 'hidden',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                marginLeft: i === 0 ? 0 : -8, // overlap
+                marginLeft: i === 0 ? 0 : -6,
                 zIndex: shown.length - i,
                 position: 'relative',
                 flexShrink: 0,
@@ -116,7 +117,7 @@ function OnlineWidget({
             >
               {u.avatar
                 ? <img src={u.avatar} alt={u.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
-                : <span style={{ fontSize: 9, fontWeight: 700, color: u.userId === currentUserId ? 'var(--amber)' : '#34d058' }}>
+                : <span style={{ fontSize: 8, fontWeight: 700, color: u.userId === currentUserId ? 'var(--amber)' : '#34d058' }}>
                     {u.name.charAt(0).toUpperCase()}
                   </span>
               }
@@ -126,19 +127,19 @@ function OnlineWidget({
           {/* Overflow bubble: +N */}
           {overflow > 0 && (
             <div style={{
-              width: 24, height: 24, borderRadius: '50%',
-              border: '2px solid var(--border)',
+              width: 20, height: 20, borderRadius: '50%',
+              border: '1.5px solid var(--border)',
               background: 'var(--surface)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              marginLeft: -8, zIndex: 0, position: 'relative', flexShrink: 0,
+              marginLeft: -6, zIndex: 0, position: 'relative', flexShrink: 0,
             }}>
-              <span style={{ fontSize: 8, fontWeight: 800, color: 'var(--text-2)' }}>+{overflow}</span>
+              <span style={{ fontSize: 7, fontWeight: 800, color: 'var(--text-2)' }}>+{overflow}</span>
             </div>
           )}
         </div>
 
         {/* Count label */}
-        <span style={{ fontSize: 11, fontWeight: 700, color: '#34d058', whiteSpace: 'nowrap' }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: '#34d058', whiteSpace: 'nowrap' }}>
           {total} online
         </span>
       </button>
@@ -388,24 +389,29 @@ export default function DashboardPage() {
         }
       >
 
-        {/* ── Welcome row + online pill ──────────────────── */}
-        <div className="flex items-start justify-between gap-3 mb-5">
-          <div className="flex-1 min-w-0">
-            <h2 className="text-lg font-bold font-display" style={{ color: '#fff' }}>
-              {profile?.full_name ? `Welcome, ${profile.full_name.split(' ')[0]}` : 'Welcome back'} ⚡
-            </h2>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--text-2)' }}>
+        {/* ── Welcome section ────────────────────────────── */}
+        <div className="mb-5">
+          {/* Row 1: name on left, nothing on right — full width, no wrapping */}
+          <h2 className="text-lg font-bold font-display" style={{ color: '#fff' }}>
+            {profile?.full_name ? `Welcome, ${profile.full_name.split(' ')[0]}` : 'Welcome back'} ⚡
+          </h2>
+
+          {/* Row 2: org name + plant id on left, online pill on right — both on same line */}
+          <div className="flex items-center justify-between gap-2 mt-1">
+            <p className="text-xs truncate" style={{ color: 'var(--text-2)', flex: 1, minWidth: 0 }}>
               {profile?.organization || 'EMMI Engineering Logbook'}
               {(profile as any)?.org_id && (
-                <span className="ml-2 font-mono" style={{ color: 'var(--amber)' }}>· Plant {(profile as any).org_id}</span>
+                <span className="ml-1.5 font-mono font-semibold" style={{ color: 'var(--amber)' }}>
+                  · {(profile as any).org_id}
+                </span>
               )}
             </p>
-          </div>
 
-          {/* Compact avatar-stack pill — no matter how many people */}
-          {(profile as any)?.org_id && (
-            <OnlineWidget users={onlineUsers} currentUserId={currentUserIdRef.current}/>
-          )}
+            {/* Online pill — sits on the same line as org, never pushes name */}
+            {(profile as any)?.org_id && (
+              <OnlineWidget users={onlineUsers} currentUserId={currentUserIdRef.current}/>
+            )}
+          </div>
         </div>
 
         {/* KPI cards */}
