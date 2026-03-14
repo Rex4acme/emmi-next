@@ -1,7 +1,5 @@
 'use client';
 // app/profile/page.tsx
-// Plant ID is set here inside the app — engineers never touch Supabase.
-// Profile save is fast: seedDefaults runs in background, text fields save instantly.
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
@@ -47,7 +45,6 @@ export default function ProfilePage() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { router.push('/auth'); return; }
       setUserId(user.id);
-
       const profile = await getProfile(supabase, user.id);
       if (profile) {
         populateFields(profile);
@@ -57,7 +54,6 @@ export default function ProfilePage() {
         setFullName(user.user_metadata?.full_name || '');
         setIsFirst(true);
         setEditing(true);
-        // Run in background — do NOT await — this was causing the slowness
         seedDefaults(supabase, user.id).catch(() => {});
       }
     }
@@ -89,13 +85,14 @@ export default function ProfilePage() {
     try {
       const url = await uploadPhoto(supabase, userId, file, 'avatars');
       setAvatarUrl(url);
-      // Save avatar immediately — separately from profile text
-      await supabase.from('profiles').upsert({ id: userId, avatar_url: url, updated_at: new Date().toISOString() });
+      await supabase.from('profiles').upsert({
+        id: userId, avatar_url: url, updated_at: new Date().toISOString(),
+      });
     } catch (err: any) {
       alert('Upload failed: ' + err.message);
     } finally {
       setUploading(false);
-      if (cameraRef.current) cameraRef.current.value = '';
+      if (cameraRef.current)  cameraRef.current.value  = '';
       if (galleryRef.current) galleryRef.current.value = '';
     }
   }
@@ -115,7 +112,9 @@ export default function ProfilePage() {
         email:          email        || undefined,
         phone:          phone        || undefined,
         avatar_url:     avatarUrl    || undefined,
-        certifications: certifications ? certifications.split(',').map((s: string) => s.trim()).filter(Boolean) : [],
+        certifications: certifications
+          ? certifications.split(',').map((s: string) => s.trim()).filter(Boolean)
+          : [],
         org_id: orgId.trim().toUpperCase() || undefined,
         role:   role || 'engineer',
       });
@@ -163,68 +162,99 @@ export default function ProfilePage() {
     <AppShell title="Profile">
       <div className="max-w-lg">
 
-        {/* Header card */}
-        <div className="card mb-5 flex items-center gap-4">
-          <div className="relative flex-shrink-0">
-            <div className="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center"
-              style={{ border: '2px solid var(--amber)', background: 'var(--surface)' }}>
-              {avatarUrl
-                ? <Image src={avatarUrl} alt="Profile" width={80} height={80} className="object-cover w-full h-full"/>
-                : <User size={32} style={{ color: 'var(--amber)' }}/>
-              }
-              {uploading && (
-                <div className="absolute inset-0 flex items-center justify-center rounded-full"
-                  style={{ background: 'rgba(0,0,0,0.6)' }}>
-                  <Loader2 size={18} className="animate-spin" style={{ color: 'var(--amber)' }}/>
+        {/* ── Header card — avatar + photo buttons side by side ── */}
+        <div className="card mb-5">
+          <div className="flex items-center gap-4">
+
+            {/* Avatar + camera/gallery buttons stacked directly below it */}
+            <div className="flex flex-col items-center gap-2 flex-shrink-0">
+              <div className="relative w-20 h-20">
+                <div className="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center"
+                  style={{ border: '2px solid var(--amber)', background: 'var(--surface)' }}>
+                  {avatarUrl
+                    ? <Image src={avatarUrl} alt="Profile" width={80} height={80} className="object-cover w-full h-full"/>
+                    : <User size={32} style={{ color: 'var(--amber)' }}/>
+                  }
+                  {uploading && (
+                    <div className="absolute inset-0 flex items-center justify-center rounded-full"
+                      style={{ background: 'rgba(0,0,0,0.65)' }}>
+                      <Loader2 size={18} className="animate-spin" style={{ color: 'var(--amber)' }}/>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Camera + Gallery buttons — right under the avatar */}
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => cameraRef.current?.click()}
+                  title="Take photo"
+                  className="flex items-center justify-center w-8 h-8 rounded-lg"
+                  style={{ background: 'rgba(240,165,0,0.12)', border: '1px solid rgba(240,165,0,0.3)', color: 'var(--amber)' }}
+                >
+                  <Camera size={14}/>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => galleryRef.current?.click()}
+                  title="Choose from gallery"
+                  className="flex items-center justify-center w-8 h-8 rounded-lg"
+                  style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}
+                >
+                  <FolderOpen size={14}/>
+                </button>
+              </div>
+            </div>
+
+            {/* Name / org info */}
+            <div className="flex-1 min-w-0">
+              <p className="font-bold text-base truncate" style={{ color: '#ffffff' }}>
+                {fullName || 'Your Name'}
+              </p>
+              {title        && <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--text-2)' }}>{title}</p>}
+              {organization && <p className="text-xs truncate"         style={{ color: 'var(--text-3)' }}>{organization}</p>}
+              {orgId        && (
+                <p className="text-xs mt-1 font-mono font-bold" style={{ color: 'var(--amber)' }}>
+                  Plant: {orgId}
+                </p>
+              )}
+              {saved && (
+                <div className="flex items-center gap-1 mt-1.5 text-xs" style={{ color: 'var(--green)' }}>
+                  <Check size={12}/> Saved
                 </div>
               )}
             </div>
-            {editing && !uploading && (
-              <button onClick={() => cameraRef.current?.click()}
-                className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full flex items-center justify-center"
-                style={{ background: 'var(--amber)', color: '#000' }}>
-                <Camera size={13}/>
-              </button>
-            )}
-          </div>
 
-          <div className="flex-1 min-w-0">
-            <p className="font-bold text-base truncate" style={{ color: '#ffffff' }}>{fullName || 'Your Name'}</p>
-            {title        && <p className="text-xs mt-0.5 truncate" style={{ color: 'var(--text-2)' }}>{title}</p>}
-            {organization && <p className="text-xs truncate" style={{ color: 'var(--text-3)' }}>{organization}</p>}
-            {saved && (
-              <div className="flex items-center gap-1 mt-1 text-xs" style={{ color: 'var(--green)' }}>
-                <Check size={12}/> Saved
-              </div>
-            )}
+            {/* Edit / Cancel toggle */}
+            {!editing
+              ? <button onClick={() => setEditing(true)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold flex-shrink-0"
+                  style={{ background: 'rgba(240,165,0,0.1)', color: 'var(--amber)', border: '1px solid rgba(240,165,0,0.2)' }}>
+                  <Edit2 size={12}/> Edit
+                </button>
+              : <button onClick={cancelEdit}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold flex-shrink-0"
+                  style={{ background: 'var(--card)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>
+                  <X size={12}/> Cancel
+                </button>
+            }
           </div>
-
-          {!editing
-            ? <button onClick={() => setEditing(true)}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold flex-shrink-0"
-                style={{ background: 'rgba(240,165,0,0.1)', color: 'var(--amber)', border: '1px solid rgba(240,165,0,0.2)' }}>
-                <Edit2 size={12}/> Edit
-              </button>
-            : <button onClick={cancelEdit}
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold flex-shrink-0"
-                style={{ background: 'var(--card)', color: 'var(--text-2)', border: '1px solid var(--border)' }}>
-                <X size={12}/> Cancel
-              </button>
-          }
         </div>
 
+        {/* Hidden file inputs */}
         <input ref={cameraRef}  type="file" accept="image/*" capture="environment" onChange={e => handlePhotoUpload(e.target.files)} className="hidden"/>
-        <input ref={galleryRef} type="file" accept="image/*" onChange={e => handlePhotoUpload(e.target.files)} className="hidden"/>
+        <input ref={galleryRef} type="file" accept="image/*"                        onChange={e => handlePhotoUpload(e.target.files)} className="hidden"/>
 
-        {/* Plant ID — always visible */}
+        {/* ── Plant ID card ─────────────────────────────── */}
         <div className="card mb-5"
           style={{ background: 'rgba(240,165,0,0.04)', border: '1px solid rgba(240,165,0,0.2)' }}>
           <div className="flex items-center gap-2 mb-2">
-            <Users size={16} style={{ color: 'var(--amber)' }}/>
+            <Users size={15} style={{ color: 'var(--amber)' }}/>
             <p className="text-sm font-bold" style={{ color: 'var(--amber)' }}>Plant ID</p>
             {orgId && (
-              <span className="ml-auto chip"
-                style={{ background: 'rgba(52,208,88,0.1)', color: 'var(--green)', border: '1px solid rgba(52,208,88,0.25)', fontSize: 9, padding: '1px 8px' }}>
+              <span className="ml-auto"
+                style={{ background: 'rgba(52,208,88,0.1)', color: 'var(--green)', border: '1px solid rgba(52,208,88,0.25)', fontSize: 9, padding: '2px 8px', borderRadius: 20, fontWeight: 700 }}>
                 ● Connected
               </span>
             )}
@@ -245,7 +275,7 @@ export default function ProfilePage() {
             </div>
           ) : (
             <div>
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-1.5">
                 <div className="flex-1 px-3 py-2 rounded-lg font-mono text-sm font-bold"
                   style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--amber)' }}>
                   {orgId.toUpperCase()}
@@ -257,7 +287,7 @@ export default function ProfilePage() {
                 </button>
               </div>
               <p className="text-xs" style={{ color: 'var(--text-3)' }}>
-                Share this with colleagues — they enter it in their own profile to join your plant.
+                Share with colleagues — they type this same ID in their own profile to join your plant.
               </p>
               {role && (
                 <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
@@ -268,7 +298,7 @@ export default function ProfilePage() {
           )}
         </div>
 
-        {/* READ-ONLY */}
+        {/* ── READ-ONLY view ─────────────────────────────── */}
         {!editing && (
           <div className="card mb-5">
             <ViewField label="Full Name"      value={fullName}      />
@@ -279,73 +309,71 @@ export default function ProfilePage() {
             <ViewField label="Email"          value={email}         />
             <ViewField label="Phone"          value={phone}         />
             <ViewField label="Certifications" value={certifications}/>
-            <div className="pt-3">
-              <button onClick={() => galleryRef.current?.click()}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
-                style={{ border: '1px solid var(--border)', color: 'var(--text-2)', background: 'var(--surface)' }}>
-                <FolderOpen size={13}/> Change Photo from Gallery
-              </button>
-            </div>
           </div>
         )}
 
-        {/* EDIT FORM */}
+        {/* ── EDIT FORM ──────────────────────────────────── */}
         {editing && (
           <form onSubmit={handleSave} className="space-y-4 mb-5">
-            <div className="flex items-center gap-3">
-              <button type="button" onClick={() => galleryRef.current?.click()}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
-                style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-2)' }}>
-                <FolderOpen size={13}/> Choose Photo
-              </button>
-              {uploading && <span className="text-xs" style={{ color: 'var(--text-3)' }}>Uploading…</span>}
-            </div>
 
             <div>
               <label className="form-label req">Full Name</label>
               <input value={fullName} onChange={e => setFullName(e.target.value)}
                 placeholder="e.g. Engr. Eze Onyebuchi" required className="form-input"/>
             </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="form-label">Job Title</label>
-                <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Senior Electrical Engineer" className="form-input"/>
+                <input value={title} onChange={e => setTitle(e.target.value)}
+                  placeholder="Senior Electrical Engineer" className="form-input"/>
               </div>
               <div>
                 <label className="form-label">Employee ID</label>
-                <input value={employeeId} onChange={e => setEmployeeId(e.target.value)} placeholder="ENG-001" className="form-input font-mono"/>
+                <input value={employeeId} onChange={e => setEmployeeId(e.target.value)}
+                  placeholder="ENG-001" className="form-input font-mono"/>
               </div>
             </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="form-label">Organisation</label>
-                <input value={organization} onChange={e => setOrganization(e.target.value)} placeholder="Company name" className="form-input"/>
+                <input value={organization} onChange={e => setOrganization(e.target.value)}
+                  placeholder="Company name" className="form-input"/>
               </div>
               <div>
                 <label className="form-label">Department</label>
-                <input value={department} onChange={e => setDepartment(e.target.value)} placeholder="Electrical Dept." className="form-input"/>
+                <input value={department} onChange={e => setDepartment(e.target.value)}
+                  placeholder="Electrical Dept." className="form-input"/>
               </div>
             </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="form-label">Email</label>
-                <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@company.com" className="form-input"/>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="you@company.com" className="form-input"/>
               </div>
               <div>
                 <label className="form-label">Phone</label>
-                <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+234 800 000 0000" className="form-input"/>
+                <input type="tel" value={phone} onChange={e => setPhone(e.target.value)}
+                  placeholder="+234 800 000 0000" className="form-input"/>
               </div>
             </div>
+
             <div>
               <label className="form-label">Certifications</label>
               <input value={certifications} onChange={e => setCertifications(e.target.value)}
                 placeholder="PMP, COREN, IEEE (comma-separated)" className="form-input"/>
             </div>
 
+            {/* Plant ID field */}
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
               <div className="flex items-center gap-2 mb-1">
                 <Users size={14} style={{ color: 'var(--amber)' }}/>
-                <label className="form-label" style={{ marginBottom: 0, color: 'var(--amber)' }}>Plant ID</label>
+                <label className="form-label" style={{ marginBottom: 0, color: 'var(--amber)' }}>
+                  Plant ID
+                </label>
               </div>
               <input
                 value={orgId}
@@ -356,11 +384,12 @@ export default function ProfilePage() {
                 maxLength={30}
               />
               <p className="form-hint mt-1">
-                All engineers at your plant type the <strong>same Plant ID</strong> to share data.
+                All engineers at your plant type the <strong>same Plant ID</strong>.
                 Example: <span className="font-mono" style={{ color: 'var(--amber)' }}>PLANT-001</span>
               </p>
             </div>
 
+            {/* Role */}
             <div>
               <label className="form-label">Your Role</label>
               <select className="form-input" value={role} onChange={e => setRole(e.target.value)}>
@@ -373,11 +402,15 @@ export default function ProfilePage() {
             <button type="submit" disabled={saving || !fullName.trim()}
               className="w-full py-3.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2"
               style={{ background: saving ? 'rgba(240,165,0,0.5)' : 'var(--amber)', color: '#000' }}>
-              {saving ? <><Loader2 size={16} className="animate-spin"/> Saving…</> : <><Save size={16}/> {isFirst ? 'Complete Setup' : 'Save Profile'}</>}
+              {saving
+                ? <><Loader2 size={16} className="animate-spin"/> Saving…</>
+                : <><Save size={16}/> {isFirst ? 'Complete Setup' : 'Save Profile'}</>
+              }
             </button>
           </form>
         )}
 
+        {/* Sign out */}
         <div className="pt-4" style={{ borderTop: '1px solid var(--border)' }}>
           <button onClick={handleSignOut}
             className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-lg"
