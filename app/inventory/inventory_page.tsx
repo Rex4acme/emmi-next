@@ -1,98 +1,31 @@
 'use client';
-// app/inventory/page.tsx — Inventory, Spares & Job Outsourcing Tracker
-// Tracks:
-//  • Spare parts stock (store inventory)
-//  • Local Purchase Orders (LPO) lifecycle:
-//    LPO to Raise → LPO Raised → Comparative Analysis → PO Approved →
-//    Spares in Transit → Materials Received/Supplied → Job Completed
-//  • Job outsourcing tracking
-//  • Stock alerts (low stock, expiry)
+// app/inventory/page.tsx
+// Spare parts store + Purchase Order (LPO) lifecycle tracker.
+// All data goes to/from Supabase. No localStorage.
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { createBrowserClient } from '@/lib/supabase';
-import { getProfile, getEquipment } from '@/lib/db';
+import {
+  getProfile, getEquipment,
+  getSpareParts, createSparePart, updateSparePart, deleteSparePart,
+  getPurchaseOrders, createPurchaseOrder, deletePurchaseOrder,
+  advancePurchaseOrderStatus,
+} from '@/lib/db';
 import { fmtDate, fmtRelative } from '@/lib/utils';
 import AppShell from '@/components/layout/AppShell';
 import {
-  Package, Plus, Search, X, ChevronDown, ChevronUp,
-  Loader2, Save, AlertTriangle, CheckCircle, Clock,
-  Truck, BarChart2, FileText, Wrench, ArrowRight,
-  TrendingDown, RefreshCw, Filter, ExternalLink,
+  Package, Plus, Search, X, Loader2, Save,
+  AlertTriangle, CheckCircle, Truck, BarChart2,
+  FileText, ArrowRight, TrendingDown, RefreshCw,
+  ChevronDown, ChevronUp, Trash2,
 } from 'lucide-react';
+import type {
+  SparePart, StockStatus, PurchaseOrder, LPOStatus, LPOPriority,
+} from '@/types';
 
-// ── Types ─────────────────────────────────────────────────────
-type StockStatus = 'in_stock' | 'low_stock' | 'out_of_stock' | 'ordered';
-type LPOStatus =
-  | 'lpo_to_raise'
-  | 'lpo_raised'
-  | 'comparative_analysis'
-  | 'po_approved'
-  | 'in_transit'
-  | 'received'
-  | 'job_completed';
-
-interface SpareItem {
-  id: string;
-  name: string;
-  part_number?: string;
-  description?: string;
-  category: string;
-  quantity: number;
-  min_quantity: number;
-  unit: string;
-  location?: string;
-  supplier?: string;
-  unit_cost?: number;
-  equipment_tags?: string[];
-  status: StockStatus;
-  last_updated: string;
-  notes?: string;
-}
-
-interface LPOItem {
-  id: string;
-  lpo_number?: string;
-  title: string;
-  description?: string;
-  status: LPOStatus;
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  supplier?: string;
-  equipment_tag?: string;
-  items: string;          // JSON string of [{name, qty, unit_cost}]
-  total_cost?: number;
-  currency: string;
-  raised_by?: string;
-  approved_by?: string;
-  date_raised?: string;
-  date_approved?: string;
-  date_received?: string;
-  date_completed?: string;
-  vendor_quotes?: string;  // comparative analysis notes
-  waybill_number?: string;
-  invoice_number?: string;
-  job_description?: string;
-  is_outsourced: boolean;
-  contractor?: string;
-  notes?: string;
-  created_at: string;
-}
-
-// ── LPO Status pipeline ───────────────────────────────────────
-const LPO_PIPELINE: { key: LPOStatus; label: string; icon: React.ReactNode; color: string }[] = [
-  { key: 'lpo_to_raise',         label: 'LPO to Raise',         icon: <FileText size={13}/>,    color: '#6e7681' },
-  { key: 'lpo_raised',           label: 'LPO Raised',           icon: <FileText size={13}/>,    color: 'var(--blue)' },
-  { key: 'comparative_analysis', label: 'Comparative Analysis', icon: <BarChart2 size={13}/>,   color: '#d29922' },
-  { key: 'po_approved',          label: 'PO Approved',          icon: <CheckCircle size={13}/>, color: 'var(--green)' },
-  { key: 'in_transit',           label: 'Spares in Transit',    icon: <Truck size={13}/>,       color: 'var(--amber)' },
-  { key: 'received',             label: 'Materials Received',   icon: <Package size={13}/>,     color: 'var(--purple)' },
-  { key: 'job_completed',        label: 'Job Completed',        icon: <CheckCircle size={13}/>, color: 'var(--green)' },
-];
-
-const PRIORITY_COLOR: Record<string, string> = {
-  critical: 'var(--red)', high: 'var(--amber)', medium: '#d29922', low: 'var(--green)',
-};
-
+// ── Constants ─────────────────────────────────────────────────
 const STOCK_CATEGORIES = [
   'Circuit Breakers', 'Contactors & Relays', 'Fuses & MCBs',
   'Cables & Wiring', 'Motors & Drives', 'Transformers',
@@ -101,306 +34,326 @@ const STOCK_CATEGORIES = [
   'Mechanical Parts', 'Gaskets & Seals', 'Bearings',
   'Batteries & UPS', 'Panel Components', 'Other',
 ];
-
 const UNITS = ['pcs', 'sets', 'rolls', 'meters', 'litres', 'kg', 'boxes', 'pairs', 'lengths'];
 
-// ── Local storage helpers (no DB schema changes needed) ───────
-// We store inventory in Supabase using a simple notes/JSONB pattern
-// via localStorage for now — easily migrated to a real table later
-function useLocalInventory(userId: string) {
-  const KEY_STOCK = `emmi_stock_${userId}`;
-  const KEY_LPO   = `emmi_lpo_${userId}`;
+const LPO_PIPELINE: { key: LPOStatus; label: string; color: string }[] = [
+  { key: 'lpo_to_raise',         label: 'LPO to Raise',         color: '#6e7681'       },
+  { key: 'lpo_raised',           label: 'LPO Raised',           color: 'var(--blue)'   },
+  { key: 'comparative_analysis', label: 'Comparative Analysis', color: '#d29922'       },
+  { key: 'po_approved',          label: 'PO Approved',          color: 'var(--green)'  },
+  { key: 'in_transit',           label: 'Spares in Transit',    color: 'var(--amber)'  },
+  { key: 'received',             label: 'Materials Received',   color: 'var(--purple)' },
+  { key: 'job_completed',        label: 'Job Completed',        color: 'var(--green)'  },
+];
 
-  function getStock(): SpareItem[] {
-    try { return JSON.parse(localStorage.getItem(KEY_STOCK) || '[]'); } catch { return []; }
-  }
-  function saveStock(items: SpareItem[]) {
-    localStorage.setItem(KEY_STOCK, JSON.stringify(items));
-  }
-  function getLPO(): LPOItem[] {
-    try { return JSON.parse(localStorage.getItem(KEY_LPO) || '[]'); } catch { return []; }
-  }
-  function saveLPO(items: LPOItem[]) {
-    localStorage.setItem(KEY_LPO, JSON.stringify(items));
-  }
-  return { getStock, saveStock, getLPO, saveLPO };
-}
+const PRIORITY_COLOR: Record<LPOPriority, string> = {
+  critical: 'var(--red)', high: 'var(--amber)', medium: '#d29922', low: 'var(--green)',
+};
 
-function genId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
-
-// ── Stock status badge ─────────────────────────────────────────
-function StockBadge({ status }: { status: StockStatus }) {
-  const config = {
-    in_stock:     { label: 'In Stock',      bg: 'rgba(52,208,88,0.1)',   color: 'var(--green)',  border: 'rgba(52,208,88,0.25)' },
-    low_stock:    { label: 'Low Stock',     bg: 'rgba(240,165,0,0.1)',   color: 'var(--amber)',  border: 'rgba(240,165,0,0.25)' },
-    out_of_stock: { label: 'Out of Stock',  bg: 'rgba(248,81,73,0.1)',   color: 'var(--red)',    border: 'rgba(248,81,73,0.25)' },
-    ordered:      { label: 'On Order',      bg: 'rgba(74,158,255,0.1)',  color: 'var(--blue)',   border: 'rgba(74,158,255,0.25)' },
+// ── Helpers ───────────────────────────────────────────────────
+function stockStatusConfig(status: StockStatus) {
+  return {
+    in_stock:     { label: 'In Stock',     bg: 'rgba(52,208,88,0.1)',  color: 'var(--green)', border: 'rgba(52,208,88,0.25)'  },
+    low_stock:    { label: 'Low Stock',    bg: 'rgba(240,165,0,0.1)',  color: 'var(--amber)', border: 'rgba(240,165,0,0.25)'  },
+    out_of_stock: { label: 'Out of Stock', bg: 'rgba(248,81,73,0.1)',  color: 'var(--red)',   border: 'rgba(248,81,73,0.25)'  },
+    ordered:      { label: 'On Order',     bg: 'rgba(74,158,255,0.1)', color: 'var(--blue)',  border: 'rgba(74,158,255,0.25)' },
   }[status];
+}
+
+function lpoStage(status: LPOStatus) {
+  return LPO_PIPELINE.find(s => s.key === status) ?? LPO_PIPELINE[0];
+}
+
+// ── Inline error banner ────────────────────────────────────────
+function ErrorBanner({ msg, onDismiss }: { msg: string; onDismiss: () => void }) {
   return (
-    <span className="chip text-xs"
-      style={{ background: config.bg, color: config.color, border: `1px solid ${config.border}`, fontSize: 10, padding: '2px 8px' }}>
-      {config.label}
-    </span>
+    <div className="flex items-start gap-2 p-3 rounded-xl mb-3 text-sm"
+      style={{ background: 'rgba(248,81,73,0.1)', color: 'var(--red)', border: '1px solid rgba(248,81,73,0.2)' }}>
+      <AlertTriangle size={15} className="mt-0.5 flex-shrink-0"/>
+      <span className="flex-1">{msg}</span>
+      <button onClick={onDismiss} style={{ color: 'var(--red)' }}><X size={14}/></button>
+    </div>
   );
 }
 
-// ── LPO Status badge ──────────────────────────────────────────
-function LPOBadge({ status }: { status: LPOStatus }) {
-  const stage = LPO_PIPELINE.find(s => s.key === status)!;
-  return (
-    <span className="chip text-xs flex items-center gap-1"
-      style={{ background: `${stage.color}18`, color: stage.color, border: `1px solid ${stage.color}30`, fontSize: 10, padding: '2px 8px' }}>
-      {stage.icon} {stage.label}
-    </span>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
 export default function InventoryPage() {
   const router   = useRouter();
   const supabase = createBrowserClient();
 
   const [userId,    setUserId]    = useState('');
-  const [profile,   setProfile]   = useState<any>(null);
-  const [equipment, setEquipment] = useState<any[]>([]);
+  const [orgId,     setOrgId]     = useState('');
+  const [raisedByDefault, setRaisedByDefault] = useState('');
+  const [equipment, setEquipment] = useState<Pick<import('@/types').Equipment, 'id'|'tag_id'|'name'>[]>([]);
   const [tab,       setTab]       = useState<'stock' | 'lpo' | 'outsourcing'>('stock');
   const [search,    setSearch]    = useState('');
+  const [pageError, setPageError] = useState('');
 
-  // Stock state
-  const [stockItems,  setStockItems]  = useState<SpareItem[]>([]);
-  const [showNewStock,setShowNewStock]= useState(false);
+  // Stock
+  const [stockItems,   setStockItems]   = useState<SparePart[]>([]);
+  const [stockLoading, setStockLoading] = useState(true);
+  const [showNewStock, setShowNewStock] = useState(false);
+  const [stockSaving,  setStockSaving]  = useState(false);
+  const [stockError,   setStockError]   = useState('');
 
-  // LPO state
-  const [lpoItems,    setLpoItems]    = useState<LPOItem[]>([]);
+  // LPO
+  const [lpoItems,    setLpoItems]    = useState<PurchaseOrder[]>([]);
+  const [lpoLoading,  setLpoLoading]  = useState(true);
   const [showNewLPO,  setShowNewLPO]  = useState(false);
+  const [lpoSaving,   setLpoSaving]   = useState(false);
+  const [lpoError,    setLpoError]    = useState('');
   const [lpoFilter,   setLpoFilter]   = useState<LPOStatus | 'all'>('all');
-  const [expandedLPO, setExpandedLPO] = useState<string | null>(null);
+  const [expandedId,  setExpandedId]  = useState<string | null>(null);
+  const [advancing,   setAdvancing]   = useState<string | null>(null);
+  const [deleting,    setDeleting]    = useState<string | null>(null);
 
-  // Stock form
-  const [sName,       setSName]       = useState('');
-  const [sPartNum,    setSPartNum]    = useState('');
-  const [sDesc,       setSDesc]       = useState('');
-  const [sCategory,   setSCategory]   = useState('Other');
-  const [sQty,        setSQty]        = useState('');
-  const [sMinQty,     setSMinQty]     = useState('');
-  const [sUnit,       setSUnit]       = useState('pcs');
-  const [sLocation,   setSLocation]   = useState('');
-  const [sSupplier,   setSSupplier]   = useState('');
-  const [sCost,       setSCost]       = useState('');
-  const [sNotes,      setSNotes]      = useState('');
-  const [sSaving,     setSSaving]     = useState(false);
+  // ── Stock form state ───────────────────────────────────────
+  const [sName,     setSName]     = useState('');
+  const [sPartNum,  setSPartNum]  = useState('');
+  const [sDesc,     setSDesc]     = useState('');
+  const [sCategory, setSCategory] = useState('Other');
+  const [sQty,      setSQty]      = useState('0');
+  const [sMinQty,   setSMinQty]   = useState('1');
+  const [sUnit,     setSUnit]     = useState('pcs');
+  const [sLocation, setSLocation] = useState('');
+  const [sSupplier, setSSupplier] = useState('');
+  const [sCost,     setSCost]     = useState('');
+  const [sNotes,    setSNotes]    = useState('');
 
-  // LPO form
-  const [lTitle,      setLTitle]      = useState('');
-  const [lDesc,       setLDesc]       = useState('');
-  const [lStatus,     setLStatus]     = useState<LPOStatus>('lpo_to_raise');
-  const [lPriority,   setLPriority]   = useState<'low'|'medium'|'high'|'critical'>('medium');
-  const [lSupplier,   setLSupplier]   = useState('');
-  const [lEquipTag,   setLEquipTag]   = useState('');
-  const [lItems,      setLItems]      = useState('');
-  const [lCost,       setLCost]       = useState('');
-  const [lCurrency,   setLCurrency]   = useState('NGN');
-  const [lRaisedBy,   setLRaisedBy]   = useState('');
-  const [lApprovedBy, setLApprovedBy] = useState('');
-  const [lWaybill,    setLWaybill]    = useState('');
-  const [lInvoice,    setLInvoice]    = useState('');
-  const [lVendorQ,    setLVendorQ]    = useState('');
-  const [lJobDesc,    setLJobDesc]    = useState('');
-  const [lContractor, setLContractor] = useState('');
-  const [lOutsourced, setLOutsourced] = useState(false);
-  const [lNotes,      setLNotes]      = useState('');
-  const [lSaving,     setLSaving]     = useState(false);
+  // ── LPO form state ─────────────────────────────────────────
+  const [lTitle,       setLTitle]       = useState('');
+  const [lDesc,        setLDesc]        = useState('');
+  const [lStatus,      setLStatus]      = useState<LPOStatus>('lpo_to_raise');
+  const [lPriority,    setLPriority]    = useState<LPOPriority>('medium');
+  const [lSupplier,    setLSupplier]    = useState('');
+  const [lEquipTag,    setLEquipTag]    = useState('');
+  const [lItems,       setLItems]       = useState('');
+  const [lCost,        setLCost]        = useState('');
+  const [lCurrency,    setLCurrency]    = useState('NGN');
+  const [lRaisedBy,    setLRaisedBy]    = useState('');
+  const [lApprovedBy,  setLApprovedBy]  = useState('');
+  const [lVendorQ,     setLVendorQ]     = useState('');
+  const [lWaybill,     setLWaybill]     = useState('');
+  const [lInvoice,     setLInvoice]     = useState('');
+  const [lJobDesc,     setLJobDesc]     = useState('');
+  const [lContractor,  setLContractor]  = useState('');
+  const [lOutsourced,  setLOutsourced]  = useState(false);
+  const [lNotes,       setLNotes]       = useState('');
 
+  // ── Load initial data ──────────────────────────────────────
   useEffect(() => {
-    async function load() {
+    async function init() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { router.push('/auth'); return; }
       setUserId(user.id);
-      const [p, eq] = await Promise.all([
+
+      const [profile, eq] = await Promise.all([
         getProfile(supabase, user.id),
         getEquipment(supabase, user.id),
       ]);
-      setProfile(p);
-      setEquipment(eq || []);
-      setLRaisedBy((p as any)?.full_name || '');
 
-      // Load from local storage
-      const inv = useLocalInventory(user.id);
-      setStockItems(inv.getStock());
-      setLpoItems(inv.getLPO());
+      const oid = (profile as any)?.org_id || '';
+      setOrgId(oid);
+      setEquipment(eq || []);
+
+      const name = profile?.full_name || '';
+      setRaisedByDefault(name);
+      setLRaisedBy(name);
+
+      const [parts, pos] = await Promise.all([
+        getSpareParts(supabase, user.id, oid || undefined),
+        getPurchaseOrders(supabase, user.id, oid || undefined),
+      ]);
+      setStockItems(parts);
+      setLpoItems(pos);
+      setStockLoading(false);
+      setLpoLoading(false);
     }
-    load();
+    init();
   }, []);
 
-  const inv = userId ? useLocalInventory(userId) : null;
+  // ── Refresh helpers ────────────────────────────────────────
+  async function reloadStock() {
+    const parts = await getSpareParts(supabase, userId, orgId || undefined);
+    setStockItems(parts);
+  }
+  async function reloadLPO() {
+    const pos = await getPurchaseOrders(supabase, userId, orgId || undefined);
+    setLpoItems(pos);
+  }
 
-  // ── Save new stock item ────────────────────────────────────
-  function handleSaveStock(e: React.FormEvent) {
+  // ══════════════════════════════════════════════════════════
+  // STOCK CRUD
+  // ══════════════════════════════════════════════════════════
+
+  async function handleSaveStock(e: React.FormEvent) {
     e.preventDefault();
-    if (!sName.trim() || !inv) return;
-    setSSaving(true);
-    const qty = parseInt(sQty) || 0;
-    const minQty = parseInt(sMinQty) || 1;
-    const item: SpareItem = {
-      id:           genId(),
-      name:         sName.trim(),
-      part_number:  sPartNum.trim() || undefined,
-      description:  sDesc.trim() || undefined,
-      category:     sCategory,
-      quantity:     qty,
-      min_quantity: minQty,
-      unit:         sUnit,
-      location:     sLocation.trim() || undefined,
-      supplier:     sSupplier.trim() || undefined,
-      unit_cost:    sCost ? parseFloat(sCost) : undefined,
-      status:       qty === 0 ? 'out_of_stock' : qty <= minQty ? 'low_stock' : 'in_stock',
-      last_updated: new Date().toISOString(),
-      notes:        sNotes.trim() || undefined,
-    };
-    const updated = [...stockItems, item];
-    setStockItems(updated);
-    inv.saveStock(updated);
-    setSName(''); setSPartNum(''); setSDesc(''); setSCategory('Other');
-    setSQty(''); setSMinQty(''); setSUnit('pcs'); setSLocation('');
-    setSSupplier(''); setSCost(''); setSNotes('');
-    setShowNewStock(false);
-    setSSaving(false);
+    if (!sName.trim()) return;
+    setStockSaving(true); setStockError('');
+    try {
+      await createSparePart(supabase, userId, {
+        org_id:       orgId || undefined,
+        name:         sName.trim(),
+        part_number:  sPartNum.trim() || undefined,
+        description:  sDesc.trim()   || undefined,
+        category:     sCategory,
+        quantity:     parseInt(sQty)   || 0,
+        min_quantity: parseInt(sMinQty) || 1,
+        unit:         sUnit,
+        location:     sLocation.trim() || undefined,
+        supplier:     sSupplier.trim() || undefined,
+        unit_cost:    sCost ? parseFloat(sCost) : undefined,
+        status:       'in_stock', // recomputed inside createSparePart
+        notes:        sNotes.trim() || undefined,
+      });
+      // Reset form
+      setSName(''); setSPartNum(''); setSDesc(''); setSCategory('Other');
+      setSQty('0'); setSMinQty('1'); setSUnit('pcs');
+      setSLocation(''); setSSupplier(''); setSCost(''); setSNotes('');
+      setShowNewStock(false);
+      await reloadStock();
+    } catch (err: any) {
+      setStockError(err.message);
+    }
+    setStockSaving(false);
   }
 
-  // ── Update stock quantity ──────────────────────────────────
-  function updateStockQty(id: string, delta: number) {
-    if (!inv) return;
-    const updated = stockItems.map(s => {
-      if (s.id !== id) return s;
-      const qty = Math.max(0, s.quantity + delta);
-      return {
-        ...s,
-        quantity:     qty,
-        status:       qty === 0 ? 'out_of_stock' as StockStatus : qty <= s.min_quantity ? 'low_stock' as StockStatus : 'in_stock' as StockStatus,
-        last_updated: new Date().toISOString(),
-      };
-    });
-    setStockItems(updated);
-    inv.saveStock(updated);
+  async function handleQtyChange(part: SparePart, delta: number) {
+    const newQty = Math.max(0, part.quantity + delta);
+    try {
+      await updateSparePart(supabase, part.id, {
+        quantity:     newQty,
+        min_quantity: part.min_quantity,
+      });
+      await reloadStock();
+    } catch (err: any) {
+      setStockError(err.message);
+    }
   }
 
-  // ── Delete stock item ──────────────────────────────────────
-  function deleteStock(id: string) {
-    if (!inv || !confirm('Delete this item?')) return;
-    const updated = stockItems.filter(s => s.id !== id);
-    setStockItems(updated);
-    inv.saveStock(updated);
+  async function handleDeleteStock(id: string) {
+    setDeleting(id);
+    try {
+      await deleteSparePart(supabase, id);
+      await reloadStock();
+    } catch (err: any) {
+      setStockError(err.message);
+    }
+    setDeleting(null);
   }
 
-  // ── Save new LPO ───────────────────────────────────────────
-  function handleSaveLPO(e: React.FormEvent) {
+  // ══════════════════════════════════════════════════════════
+  // LPO CRUD
+  // ══════════════════════════════════════════════════════════
+
+  async function handleSaveLPO(e: React.FormEvent) {
     e.preventDefault();
-    if (!lTitle.trim() || !inv) return;
-    setLSaving(true);
-    const existing = lpoItems;
-    const lpoNum   = `LPO-${String(existing.length + 1).padStart(4, '0')}`;
-    const item: LPOItem = {
-      id:             genId(),
-      lpo_number:     lpoNum,
-      title:          lTitle.trim(),
-      description:    lDesc.trim() || undefined,
-      status:         lStatus,
-      priority:       lPriority,
-      supplier:       lSupplier.trim() || undefined,
-      equipment_tag:  lEquipTag || undefined,
-      items:          lItems.trim() || 'See description',
-      total_cost:     lCost ? parseFloat(lCost) : undefined,
-      currency:       lCurrency,
-      raised_by:      lRaisedBy.trim() || undefined,
-      approved_by:    lApprovedBy.trim() || undefined,
-      date_raised:    lStatus !== 'lpo_to_raise' ? new Date().toISOString() : undefined,
-      vendor_quotes:  lVendorQ.trim() || undefined,
-      waybill_number: lWaybill.trim() || undefined,
-      invoice_number: lInvoice.trim() || undefined,
-      job_description:lJobDesc.trim() || undefined,
-      is_outsourced:  lOutsourced,
-      contractor:     lContractor.trim() || undefined,
-      notes:          lNotes.trim() || undefined,
-      created_at:     new Date().toISOString(),
-    };
-    const updated = [...lpoItems, item];
-    setLpoItems(updated);
-    inv.saveLPO(updated);
-    setLTitle(''); setLDesc(''); setLStatus('lpo_to_raise'); setLPriority('medium');
-    setLSupplier(''); setLEquipTag(''); setLItems(''); setLCost('');
-    setLRaisedBy(profile?.full_name || ''); setLApprovedBy('');
-    setLWaybill(''); setLInvoice(''); setLVendorQ(''); setLJobDesc('');
-    setLContractor(''); setLOutsourced(false); setLNotes('');
-    setShowNewLPO(false);
-    setLSaving(false);
+    if (!lTitle.trim()) return;
+    setLpoSaving(true); setLpoError('');
+    try {
+      await createPurchaseOrder(supabase, userId, {
+        org_id:          orgId || undefined,
+        title:           lTitle.trim(),
+        description:     lDesc.trim()      || undefined,
+        status:          lStatus,
+        priority:        lPriority,
+        supplier:        lSupplier.trim()  || undefined,
+        equipment_tag:   lEquipTag         || undefined,
+        items:           lItems.trim()     || undefined,
+        total_cost:      lCost ? parseFloat(lCost) : undefined,
+        currency:        lCurrency,
+        raised_by:       lRaisedBy.trim()  || undefined,
+        approved_by:     lApprovedBy.trim()|| undefined,
+        date_raised:     lStatus !== 'lpo_to_raise' ? new Date().toISOString() : undefined,
+        vendor_quotes:   lVendorQ.trim()   || undefined,
+        waybill_number:  lWaybill.trim()   || undefined,
+        invoice_number:  lInvoice.trim()   || undefined,
+        job_description: lJobDesc.trim()   || undefined,
+        is_outsourced:   lOutsourced,
+        contractor:      lContractor.trim()|| undefined,
+        notes:           lNotes.trim()     || undefined,
+      });
+      // Reset form
+      setLTitle(''); setLDesc(''); setLStatus('lpo_to_raise'); setLPriority('medium');
+      setLSupplier(''); setLEquipTag(''); setLItems(''); setLCost('');
+      setLRaisedBy(raisedByDefault); setLApprovedBy('');
+      setLVendorQ(''); setLWaybill(''); setLInvoice(''); setLJobDesc('');
+      setLContractor(''); setLOutsourced(false); setLNotes('');
+      setShowNewLPO(false);
+      await reloadLPO();
+    } catch (err: any) {
+      setLpoError(err.message);
+    }
+    setLpoSaving(false);
   }
 
-  // ── Advance LPO to next stage ──────────────────────────────
-  function advanceLPO(id: string) {
-    if (!inv) return;
-    const order = LPO_PIPELINE.map(s => s.key);
-    const updated = lpoItems.map(l => {
-      if (l.id !== id) return l;
-      const idx = order.indexOf(l.status);
-      if (idx >= order.length - 1) return l;
-      const newStatus = order[idx + 1];
-      const now = new Date().toISOString();
-      return {
-        ...l,
-        status:         newStatus,
-        date_approved:  newStatus === 'po_approved'  ? now : l.date_approved,
-        date_received:  newStatus === 'received'     ? now : l.date_received,
-        date_completed: newStatus === 'job_completed'? now : l.date_completed,
-      };
-    });
-    setLpoItems(updated);
-    inv.saveLPO(updated);
+  async function handleAdvance(po: PurchaseOrder) {
+    setAdvancing(po.id); setLpoError('');
+    try {
+      await advancePurchaseOrderStatus(supabase, po.id, po.status);
+      await reloadLPO();
+    } catch (err: any) {
+      setLpoError(err.message);
+    }
+    setAdvancing(null);
   }
 
-  // ── Delete LPO ─────────────────────────────────────────────
-  function deleteLPO(id: string) {
-    if (!inv || !confirm('Delete this LPO?')) return;
-    const updated = lpoItems.filter(l => l.id !== id);
-    setLpoItems(updated);
-    inv.saveLPO(updated);
+  async function handleDeleteLPO(id: string) {
+    setDeleting(id); setLpoError('');
+    try {
+      await deletePurchaseOrder(supabase, id);
+      await reloadLPO();
+    } catch (err: any) {
+      setLpoError(err.message);
+    }
+    setDeleting(null);
   }
 
-  // ── Filtered items ─────────────────────────────────────────
+  // ── Derived data ───────────────────────────────────────────
   const filteredStock = stockItems.filter(s => {
     const q = search.toLowerCase();
-    return !q || s.name.toLowerCase().includes(q) ||
+    return !q ||
+      s.name.toLowerCase().includes(q) ||
       (s.part_number || '').toLowerCase().includes(q) ||
       s.category.toLowerCase().includes(q) ||
       (s.location || '').toLowerCase().includes(q);
   });
 
-  const filteredLPO = lpoItems.filter(l => {
+  const lpoBase = lpoItems.filter(l =>
+    tab === 'outsourcing' ? l.is_outsourced : !l.is_outsourced
+  );
+  const filteredLPO = lpoBase.filter(l => {
     const matchStatus = lpoFilter === 'all' || l.status === lpoFilter;
     const q = search.toLowerCase();
-    const matchSearch = !q || l.title.toLowerCase().includes(q) ||
+    const matchSearch = !q ||
+      l.title.toLowerCase().includes(q) ||
       (l.lpo_number || '').toLowerCase().includes(q) ||
       (l.supplier || '').toLowerCase().includes(q);
     return matchStatus && matchSearch;
-  }).filter(l => tab === 'outsourcing' ? l.is_outsourced : !l.is_outsourced || tab === 'lpo');
+  });
 
-  // ── Stats ──────────────────────────────────────────────────
-  const lowStock    = stockItems.filter(s => s.status === 'low_stock' || s.status === 'out_of_stock').length;
-  const openLPO     = lpoItems.filter(l => l.status !== 'job_completed').length;
-  const inTransit   = lpoItems.filter(l => l.status === 'in_transit').length;
-  const outsourced  = lpoItems.filter(l => l.is_outsourced && l.status !== 'job_completed').length;
+  const lowStockCount = stockItems.filter(s => s.status === 'low_stock' || s.status === 'out_of_stock').length;
+  const openLPOCount  = lpoItems.filter(l => l.status !== 'job_completed' && !l.is_outsourced).length;
+  const inTransit     = lpoItems.filter(l => l.status === 'in_transit').length;
+  const openOutsource = lpoItems.filter(l => l.is_outsourced && l.status !== 'job_completed').length;
 
+  // ══════════════════════════════════════════════════════════
+  // RENDER
+  // ══════════════════════════════════════════════════════════
   return (
     <AppShell title="Inventory & Procurement">
-      {/* ── Summary cards ─────────────────────────────────── */}
+
+      {pageError && <ErrorBanner msg={pageError} onDismiss={() => setPageError('')}/>}
+
+      {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
         {[
-          { label: 'Stock Items',   value: stockItems.length,    color: 'var(--blue)',   icon: <Package size={15}/> },
-          { label: 'Low/Out Stock', value: lowStock,             color: 'var(--red)',    icon: <TrendingDown size={15}/> },
-          { label: 'Open LPOs',     value: openLPO,              color: 'var(--amber)',  icon: <FileText size={15}/> },
-          { label: 'In Transit',    value: inTransit,            color: 'var(--purple)', icon: <Truck size={15}/> },
+          { label: 'Stock Items',   value: stockItems.length, color: 'var(--blue)',   icon: <Package size={15}/> },
+          { label: 'Low / Out',     value: lowStockCount,     color: 'var(--red)',    icon: <TrendingDown size={15}/> },
+          { label: 'Open LPOs',     value: openLPOCount,      color: 'var(--amber)',  icon: <FileText size={15}/> },
+          { label: 'In Transit',    value: inTransit,         color: 'var(--purple)', icon: <Truck size={15}/> },
         ].map(s => (
-          <div key={s.label} className="card flex items-center gap-3"
-            style={{ borderLeft: `3px solid ${s.color}` }}>
+          <div key={s.label} className="card flex items-center gap-3" style={{ borderLeft: `3px solid ${s.color}` }}>
             <div className="p-2 rounded-lg" style={{ background: `${s.color}20`, color: s.color }}>{s.icon}</div>
             <div>
               <p className="text-xl font-bold font-mono" style={{ color: s.color }}>{s.value}</p>
@@ -410,15 +363,15 @@ export default function InventoryPage() {
         ))}
       </div>
 
-      {/* ── Tabs ──────────────────────────────────────────── */}
+      {/* Tabs */}
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
         {[
-          { key: 'stock',       label: '📦 Stock',       badge: lowStock > 0 ? lowStock : 0 },
-          { key: 'lpo',         label: '📋 LPOs',        badge: openLPO },
-          { key: 'outsourcing', label: '🔧 Outsourcing', badge: outsourced },
+          { key: 'stock',       label: '📦 Stock',       badge: lowStockCount },
+          { key: 'lpo',         label: '📋 LPOs',        badge: openLPOCount },
+          { key: 'outsourcing', label: '🔧 Outsourcing', badge: openOutsource },
         ].map(t => (
-          <button key={t.key} onClick={() => { setTab(t.key as any); setSearch(''); }}
-            className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold transition-all relative"
+          <button key={t.key} onClick={() => { setTab(t.key as typeof tab); setSearch(''); setLpoFilter('all'); }}
+            className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold transition-all"
             style={{
               background: tab === t.key ? 'var(--amber)' : 'var(--card)',
               color:      tab === t.key ? '#000'         : 'var(--text-2)',
@@ -426,12 +379,8 @@ export default function InventoryPage() {
             }}>
             {t.label}
             {t.badge > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full text-xs font-bold"
-                style={{
-                  background: tab === t.key ? 'rgba(0,0,0,0.2)' : 'var(--red)',
-                  color:      tab === t.key ? '#000' : '#fff',
-                  fontSize: 9,
-                }}>
+              <span className="px-1.5 py-0.5 rounded-full font-bold"
+                style={{ background: tab === t.key ? 'rgba(0,0,0,0.2)' : 'var(--red)', color: tab === t.key ? '#000' : '#fff', fontSize: 9 }}>
                 {t.badge}
               </span>
             )}
@@ -439,17 +388,17 @@ export default function InventoryPage() {
         ))}
       </div>
 
-      {/* ── Search ────────────────────────────────────────── */}
+      {/* Search */}
       <div className="relative mb-4">
         <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-3)' }}/>
         <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder={tab === 'stock' ? 'Search parts, part numbers…' : 'Search LPOs, suppliers…'}
+          placeholder={tab === 'stock' ? 'Search name, part number, location…' : 'Search LPOs, suppliers…'}
           className="form-input pl-9"/>
       </div>
 
-      {/* ══════════════════════════════════════════════════════
+      {/* ════════════════════════════════════════════════════
           STOCK TAB
-      ══════════════════════════════════════════════════════ */}
+      ════════════════════════════════════════════════════ */}
       {tab === 'stock' && (
         <>
           <div className="flex items-center justify-between mb-3">
@@ -461,7 +410,19 @@ export default function InventoryPage() {
             </button>
           </div>
 
-          {/* ── New stock form ─────────────────────────── */}
+          {stockError && <ErrorBanner msg={stockError} onDismiss={() => setStockError('')}/>}
+
+          {lowStockCount > 0 && (
+            <div className="card mb-4 flex items-start gap-3"
+              style={{ background: 'rgba(248,81,73,0.06)', border: '1px solid rgba(248,81,73,0.2)' }}>
+              <AlertTriangle size={15} style={{ color: 'var(--red)', flexShrink: 0, marginTop: 2 }}/>
+              <p className="text-xs" style={{ color: 'var(--text-2)' }}>
+                <span className="font-bold" style={{ color: 'var(--red)' }}>{lowStockCount} item{lowStockCount > 1 ? 's' : ''}</span> below minimum level — raise an LPO to replenish.
+              </p>
+            </div>
+          )}
+
+          {/* New stock form */}
           {showNewStock && (
             <div className="card mb-4" style={{ border: '1px solid rgba(74,158,255,0.25)' }}>
               <div className="flex items-center justify-between mb-3">
@@ -472,145 +433,166 @@ export default function InventoryPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="form-label req">Item Name</label>
-                    <input className="form-input" placeholder="e.g. 32A MCB" required value={sName} onChange={e => setSName(e.target.value)}/>
+                    <input className="form-input" placeholder="e.g. 32A MCB" required
+                      value={sName} onChange={e => setSName(e.target.value)}/>
                   </div>
                   <div>
                     <label className="form-label">Part Number</label>
-                    <input className="form-input font-mono" placeholder="e.g. MCB-32A-001" value={sPartNum} onChange={e => setSPartNum(e.target.value)}/>
+                    <input className="form-input font-mono" placeholder="e.g. MCB-32A-SN"
+                      value={sPartNum} onChange={e => setSPartNum(e.target.value)}/>
                   </div>
                 </div>
                 <div>
                   <label className="form-label">Category</label>
                   <select className="form-input" value={sCategory} onChange={e => setSCategory(e.target.value)}>
-                    {STOCK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    {STOCK_CATEGORIES.map(c => <option key={c}>{c}</option>)}
                   </select>
                 </div>
                 <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="form-label req">Qty in Store</label>
-                    <input type="number" min="0" className="form-input" placeholder="0" required value={sQty} onChange={e => setSQty(e.target.value)}/>
+                    <input type="number" min="0" className="form-input" required
+                      value={sQty} onChange={e => setSQty(e.target.value)}/>
                   </div>
                   <div>
                     <label className="form-label">Min Qty</label>
-                    <input type="number" min="0" className="form-input" placeholder="1" value={sMinQty} onChange={e => setSMinQty(e.target.value)}/>
+                    <input type="number" min="0" className="form-input"
+                      value={sMinQty} onChange={e => setSMinQty(e.target.value)}/>
                   </div>
                   <div>
                     <label className="form-label">Unit</label>
                     <select className="form-input" value={sUnit} onChange={e => setSUnit(e.target.value)}>
-                      {UNITS.map(u => <option key={u} value={u}>{u}</option>)}
+                      {UNITS.map(u => <option key={u}>{u}</option>)}
                     </select>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="form-label">Store Location</label>
-                    <input className="form-input" placeholder="e.g. Shelf B3" value={sLocation} onChange={e => setSLocation(e.target.value)}/>
+                    <input className="form-input" placeholder="e.g. Shelf B3"
+                      value={sLocation} onChange={e => setSLocation(e.target.value)}/>
                   </div>
                   <div>
                     <label className="form-label">Supplier</label>
-                    <input className="form-input" placeholder="Supplier name" value={sSupplier} onChange={e => setSSupplier(e.target.value)}/>
+                    <input className="form-input" placeholder="Supplier name"
+                      value={sSupplier} onChange={e => setSSupplier(e.target.value)}/>
                   </div>
                 </div>
                 <div>
                   <label className="form-label">Unit Cost (₦)</label>
-                  <input type="number" min="0" className="form-input" placeholder="0.00" value={sCost} onChange={e => setSCost(e.target.value)}/>
+                  <input type="number" min="0" step="0.01" className="form-input" placeholder="0.00"
+                    value={sCost} onChange={e => setSCost(e.target.value)}/>
                 </div>
                 <div>
-                  <label className="form-label">Description / Notes</label>
-                  <textarea className="form-input" rows={2} placeholder="Specifications, where used, etc." value={sNotes} onChange={e => setSNotes(e.target.value)}/>
+                  <label className="form-label">Description / Specification</label>
+                  <textarea className="form-input" rows={2}
+                    placeholder="Voltage rating, model, where used, etc."
+                    value={sDesc} onChange={e => setSDesc(e.target.value)}/>
                 </div>
-                <button type="submit" disabled={sSaving}
+                <div>
+                  <label className="form-label">Notes</label>
+                  <textarea className="form-input" rows={2} placeholder="Any additional notes"
+                    value={sNotes} onChange={e => setSNotes(e.target.value)}/>
+                </div>
+                <button type="submit" disabled={stockSaving || !sName.trim()}
                   className="w-full py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2"
-                  style={{ background: 'var(--blue)', color: '#fff' }}>
-                  {sSaving ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>}
-                  Save to Store
+                  style={{ background: stockSaving ? 'rgba(74,158,255,0.4)' : 'var(--blue)', color: '#fff' }}>
+                  {stockSaving ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>}
+                  {stockSaving ? 'Saving…' : 'Save to Store'}
                 </button>
               </form>
             </div>
           )}
 
-          {/* ── Low stock alert ────────────────────────── */}
-          {lowStock > 0 && (
-            <div className="card mb-4 flex items-start gap-3"
-              style={{ background: 'rgba(248,81,73,0.06)', border: '1px solid rgba(248,81,73,0.2)' }}>
-              <AlertTriangle size={16} style={{ color: 'var(--red)', flexShrink: 0, marginTop: 2 }}/>
-              <p className="text-xs" style={{ color: 'var(--text-2)' }}>
-                <span className="font-bold" style={{ color: 'var(--red)' }}>{lowStock} item{lowStock > 1 ? 's' : ''}</span> below minimum stock level — raise an LPO to replenish.
-              </p>
+          {/* Stock list */}
+          {stockLoading ? (
+            <div className="space-y-3">
+              {[1,2,3].map(i => <div key={i} className="card animate-pulse" style={{ height: 90 }}/>)}
             </div>
-          )}
-
-          {/* ── Stock list ─────────────────────────────── */}
-          {filteredStock.length === 0 ? (
+          ) : filteredStock.length === 0 ? (
             <div className="card text-center py-10">
               <Package size={32} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }}/>
               <p className="text-sm" style={{ color: 'var(--text-2)' }}>
-                {search ? 'No items match' : 'No stock items yet'}
+                {search ? 'No items match your search' : 'No stock items yet — add spare parts to your store'}
               </p>
-              {!search && <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>Add spare parts and materials to your store</p>}
             </div>
           ) : (
             <div className="space-y-3">
-              {filteredStock.map(item => (
-                <div key={item.id} className="card"
-                  style={{ borderLeft: `3px solid ${item.status === 'out_of_stock' ? 'var(--red)' : item.status === 'low_stock' ? 'var(--amber)' : 'var(--green)'}` }}>
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap mb-1">
-                        {item.part_number && <span className="tag-chip text-xs">{item.part_number}</span>}
-                        <StockBadge status={item.status}/>
-                        <span className="text-xs" style={{ color: 'var(--text-3)' }}>{item.category}</span>
+              {filteredStock.map(part => {
+                const cfg = stockStatusConfig(part.status);
+                const borderColor = part.status === 'out_of_stock' ? 'var(--red)' : part.status === 'low_stock' ? 'var(--amber)' : 'var(--green)';
+                return (
+                  <div key={part.id} className="card" style={{ borderLeft: `3px solid ${borderColor}` }}>
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-1">
+                          {part.part_number && <span className="tag-chip text-xs font-mono">{part.part_number}</span>}
+                          <span className="chip text-xs"
+                            style={{ background: cfg.bg, color: cfg.color, border: `1px solid ${cfg.border}`, fontSize: 10, padding: '2px 8px' }}>
+                            {cfg.label}
+                          </span>
+                          <span className="text-xs" style={{ color: 'var(--text-3)' }}>{part.category}</span>
+                        </div>
+                        <p className="text-sm font-semibold">{part.name}</p>
+                        {part.description && (
+                          <p className="text-xs mt-0.5 leading-snug" style={{ color: 'var(--text-3)' }}>{part.description}</p>
+                        )}
                       </div>
-                      <p className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{item.name}</p>
-                      {item.description && <p className="text-xs mt-0.5 leading-snug" style={{ color: 'var(--text-3)' }}>{item.description}</p>}
+                      <button onClick={() => handleDeleteStock(part.id)} disabled={deleting === part.id}
+                        className="flex-shrink-0 p-1 rounded" style={{ color: 'var(--text-3)' }}>
+                        {deleting === part.id ? <Loader2 size={13} className="animate-spin"/> : <Trash2 size={13}/>}
+                      </button>
                     </div>
-                    <button onClick={() => deleteStock(item.id)} style={{ color: 'var(--text-3)', flexShrink: 0 }}>
-                      <X size={14}/>
-                    </button>
-                  </div>
 
-                  {/* Qty controls */}
-                  <div className="flex items-center gap-3 flex-wrap">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => updateStockQty(item.id, -1)}
-                        className="w-7 h-7 rounded-lg flex items-center justify-center text-sm font-bold"
-                        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                        −
-                      </button>
-                      <div className="text-center min-w-[60px]">
-                        <p className="text-lg font-bold font-mono" style={{ color: item.status === 'out_of_stock' ? 'var(--red)' : item.status === 'low_stock' ? 'var(--amber)' : 'var(--text)' }}>
-                          {item.quantity}
-                        </p>
-                        <p className="text-xs" style={{ color: 'var(--text-3)' }}>{item.unit}</p>
+                    {/* Qty stepper */}
+                    <div className="flex items-center gap-4 flex-wrap">
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => handleQtyChange(part, -1)}
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-base font-bold"
+                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                          −
+                        </button>
+                        <div className="text-center" style={{ minWidth: 56 }}>
+                          <p className="text-xl font-bold font-mono leading-none"
+                            style={{ color: part.status === 'out_of_stock' ? 'var(--red)' : part.status === 'low_stock' ? 'var(--amber)' : 'var(--text)' }}>
+                            {part.quantity}
+                          </p>
+                          <p className="text-xs" style={{ color: 'var(--text-3)' }}>{part.unit}</p>
+                        </div>
+                        <button onClick={() => handleQtyChange(part, 1)}
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-base font-bold"
+                          style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
+                          +
+                        </button>
                       </div>
-                      <button onClick={() => updateStockQty(item.id, 1)}
-                        className="w-7 h-7 rounded-lg flex items-center justify-center text-sm font-bold"
-                        style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                        +
-                      </button>
+                      <div className="text-xs space-y-0.5" style={{ color: 'var(--text-3)' }}>
+                        {part.location && <p>📍 {part.location}</p>}
+                        {part.supplier && <p>🏭 {part.supplier}</p>}
+                        {part.unit_cost != null && (
+                          <p>₦{part.unit_cost.toLocaleString()} / {part.unit}</p>
+                        )}
+                      </div>
+                      <p className="ml-auto text-xs" style={{ color: 'var(--text-3)' }}>
+                        Min: {part.min_quantity} {part.unit}
+                      </p>
                     </div>
-                    <div className="text-xs space-y-0.5 ml-2" style={{ color: 'var(--text-3)' }}>
-                      {item.location && <p>📍 {item.location}</p>}
-                      {item.supplier && <p>🏭 {item.supplier}</p>}
-                      {item.unit_cost && <p>💰 ₦{item.unit_cost.toLocaleString()} / {item.unit}</p>}
-                    </div>
-                    <div className="ml-auto text-xs" style={{ color: 'var(--text-3)' }}>
-                      Min: {item.min_quantity} {item.unit}
-                    </div>
+                    {part.notes && (
+                      <p className="text-xs mt-2 pt-2 leading-snug"
+                        style={{ color: 'var(--text-3)', borderTop: '1px solid var(--border)' }}>
+                        {part.notes}
+                      </p>
+                    )}
                   </div>
-                  {item.notes && (
-                    <p className="text-xs mt-2 pt-2 leading-snug" style={{ color: 'var(--text-3)', borderTop: '1px solid var(--border)' }}>{item.notes}</p>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </>
       )}
 
-      {/* ══════════════════════════════════════════════════════
-          LPO / OUTSOURCING TABS
-      ══════════════════════════════════════════════════════ */}
+      {/* ════════════════════════════════════════════════════
+          LPO / OUTSOURCING TAB
+      ════════════════════════════════════════════════════ */}
       {(tab === 'lpo' || tab === 'outsourcing') && (
         <>
           <div className="flex items-center justify-between mb-3">
@@ -624,30 +606,31 @@ export default function InventoryPage() {
             </button>
           </div>
 
-          {/* LPO pipeline summary */}
+          {lpoError && <ErrorBanner msg={lpoError} onDismiss={() => setLpoError('')}/>}
+
+          {/* Pipeline summary strip */}
           {tab === 'lpo' && (
             <div className="mb-4 overflow-x-auto">
               <div className="flex items-center gap-1 min-w-max">
                 {LPO_PIPELINE.map((stage, i) => {
-                  const count = lpoItems.filter(l => l.status === stage.key && !l.is_outsourced).length;
+                  const count = lpoBase.filter(l => l.status === stage.key).length;
                   return (
                     <div key={stage.key} className="flex items-center gap-1">
                       <button
                         onClick={() => setLpoFilter(lpoFilter === stage.key ? 'all' : stage.key)}
-                        className="flex flex-col items-center gap-1 px-2.5 py-2 rounded-xl text-center transition-all"
+                        className="flex flex-col items-center gap-1 px-2.5 py-2 rounded-xl transition-all"
                         style={{
                           background: lpoFilter === stage.key ? `${stage.color}20` : 'var(--card)',
-                          border: `1px solid ${lpoFilter === stage.key ? stage.color + '40' : 'var(--border)'}`,
-                          minWidth: 70,
+                          border: `1px solid ${lpoFilter === stage.key ? stage.color + '50' : 'var(--border)'}`,
+                          minWidth: 68,
                         }}>
-                        <span style={{ color: stage.color }}>{stage.icon}</span>
                         <span className="text-lg font-bold font-mono" style={{ color: stage.color }}>{count}</span>
-                        <span className="text-xs leading-tight text-center" style={{ color: 'var(--text-3)', fontSize: 9 }}>
+                        <span style={{ color: 'var(--text-3)', fontSize: 9, textAlign: 'center', lineHeight: 1.3 }}>
                           {stage.label}
                         </span>
                       </button>
                       {i < LPO_PIPELINE.length - 1 && (
-                        <ArrowRight size={12} style={{ color: 'var(--border)', flexShrink: 0 }}/>
+                        <ArrowRight size={11} style={{ color: 'var(--border)', flexShrink: 0 }}/>
                       )}
                     </div>
                   );
@@ -656,25 +639,27 @@ export default function InventoryPage() {
             </div>
           )}
 
-          {/* ── New LPO form ───────────────────────────── */}
+          {/* New LPO form */}
           {showNewLPO && (
             <div className="card mb-4" style={{ border: '1px solid rgba(240,165,0,0.25)' }}>
               <div className="flex items-center justify-between mb-3">
                 <p className="text-sm font-bold" style={{ color: 'var(--amber)' }}>
-                  📋 {tab === 'outsourcing' ? 'New Outsourced Job' : 'New Purchase Order'}
+                  {tab === 'outsourcing' ? '🔧 New Outsourced Job' : '📋 New Purchase Order'}
                 </p>
                 <button onClick={() => setShowNewLPO(false)} style={{ color: 'var(--text-3)' }}><X size={15}/></button>
               </div>
               <form onSubmit={handleSaveLPO} className="space-y-3">
                 <div>
-                  <label className="form-label req">Title / Description</label>
-                  <input className="form-input" placeholder="e.g. Procurement of 32A MCBs for MCC panel" required value={lTitle} onChange={e => setLTitle(e.target.value)}/>
+                  <label className="form-label req">Title</label>
+                  <input className="form-input" required
+                    placeholder="e.g. Procurement of 32A MCBs for MCC-01 panel"
+                    value={lTitle} onChange={e => setLTitle(e.target.value)}/>
                 </div>
-
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="form-label">Priority</label>
-                    <select className="form-input" value={lPriority} onChange={e => setLPriority(e.target.value as any)}>
+                    <select className="form-input" value={lPriority}
+                      onChange={e => setLPriority(e.target.value as LPOPriority)}>
                       <option value="low">Low</option>
                       <option value="medium">Medium</option>
                       <option value="high">High</option>
@@ -683,27 +668,30 @@ export default function InventoryPage() {
                   </div>
                   <div>
                     <label className="form-label">Initial Stage</label>
-                    <select className="form-input" value={lStatus} onChange={e => setLStatus(e.target.value as LPOStatus)}>
-                      {LPO_PIPELINE.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                    <select className="form-input" value={lStatus}
+                      onChange={e => setLStatus(e.target.value as LPOStatus)}>
+                      {LPO_PIPELINE.map(s => (
+                        <option key={s.key} value={s.key}>{s.label}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
-
                 <div>
                   <label className="form-label">Items to Procure</label>
                   <textarea className="form-input" rows={3}
-                    placeholder="e.g. 10× 32A MCB (Schneider), 5× Contactor 40A, 2× Cable reel 16mm²"
+                    placeholder="e.g. 10× 32A MCB (Schneider), 5× 40A Contactor, 2× 16mm² cable reel"
                     value={lItems} onChange={e => setLItems(e.target.value)}/>
                 </div>
-
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="form-label">Estimated Cost</label>
-                    <input type="number" min="0" className="form-input" placeholder="0.00" value={lCost} onChange={e => setLCost(e.target.value)}/>
+                    <input type="number" min="0" step="0.01" className="form-input" placeholder="0.00"
+                      value={lCost} onChange={e => setLCost(e.target.value)}/>
                   </div>
                   <div>
                     <label className="form-label">Currency</label>
-                    <select className="form-input" value={lCurrency} onChange={e => setLCurrency(e.target.value)}>
+                    <select className="form-input" value={lCurrency}
+                      onChange={e => setLCurrency(e.target.value)}>
                       <option value="NGN">NGN (₦)</option>
                       <option value="USD">USD ($)</option>
                       <option value="GBP">GBP (£)</option>
@@ -711,208 +699,226 @@ export default function InventoryPage() {
                     </select>
                   </div>
                 </div>
-
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="form-label">Supplier / Vendor</label>
-                    <input className="form-input" placeholder="Supplier name" value={lSupplier} onChange={e => setLSupplier(e.target.value)}/>
+                    <input className="form-input" placeholder="Supplier name"
+                      value={lSupplier} onChange={e => setLSupplier(e.target.value)}/>
                   </div>
                   <div>
                     <label className="form-label">Related Equipment</label>
-                    <select className="form-input" value={lEquipTag} onChange={e => setLEquipTag(e.target.value)}>
+                    <select className="form-input" value={lEquipTag}
+                      onChange={e => setLEquipTag(e.target.value)}>
                       <option value="">— None —</option>
-                      {equipment.map(eq => <option key={eq.id} value={eq.tag_id}>{eq.tag_id} — {eq.name}</option>)}
+                      {equipment.map(eq => (
+                        <option key={eq.id} value={eq.tag_id}>{eq.tag_id} — {eq.name}</option>
+                      ))}
                     </select>
                   </div>
                 </div>
-
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="form-label">Raised By</label>
-                    <input className="form-input" placeholder="Engineer name" value={lRaisedBy} onChange={e => setLRaisedBy(e.target.value)}/>
+                    <input className="form-input" value={lRaisedBy}
+                      onChange={e => setLRaisedBy(e.target.value)}/>
                   </div>
                   <div>
                     <label className="form-label">Approved By</label>
-                    <input className="form-input" placeholder="Approver name" value={lApprovedBy} onChange={e => setLApprovedBy(e.target.value)}/>
+                    <input className="form-input" placeholder="Approver name"
+                      value={lApprovedBy} onChange={e => setLApprovedBy(e.target.value)}/>
                   </div>
                 </div>
-
                 <div>
                   <label className="form-label">Comparative Analysis / Vendor Quotes</label>
                   <textarea className="form-input" rows={2}
-                    placeholder="e.g. Vendor A: ₦45,000 | Vendor B: ₦42,000 (selected) | Vendor C: ₦48,500"
+                    placeholder="Vendor A: ₦45,000 | Vendor B: ₦42,000 ✓ | Vendor C: ₦48,500"
                     value={lVendorQ} onChange={e => setLVendorQ(e.target.value)}/>
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="form-label">Waybill Number</label>
+                    <input className="form-input font-mono" placeholder="WB-001"
+                      value={lWaybill} onChange={e => setLWaybill(e.target.value)}/>
+                  </div>
+                  <div>
+                    <label className="form-label">Invoice Number</label>
+                    <input className="form-input font-mono" placeholder="INV-001"
+                      value={lInvoice} onChange={e => setLInvoice(e.target.value)}/>
+                  </div>
+                </div>
 
-                {/* Outsourcing toggle */}
+                {/* Outsourcing fields */}
                 <div className="flex items-center gap-3 p-3 rounded-lg"
                   style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                  <input type="checkbox" id="outsourced" checked={lOutsourced}
+                  <input type="checkbox" id="lOutsourced" checked={lOutsourced}
                     onChange={e => setLOutsourced(e.target.checked)} className="w-4 h-4 accent-amber-400"/>
-                  <label htmlFor="outsourced" className="text-sm font-medium" style={{ color: 'var(--text)' }}>
+                  <label htmlFor="lOutsourced" className="text-sm font-medium" style={{ color: 'var(--text)' }}>
                     This is an outsourced job / contract
                   </label>
                 </div>
-
                 {lOutsourced && (
                   <>
                     <div>
                       <label className="form-label">Contractor / Service Company</label>
-                      <input className="form-input" placeholder="Contractor name" value={lContractor} onChange={e => setLContractor(e.target.value)}/>
+                      <input className="form-input" placeholder="Contractor name"
+                        value={lContractor} onChange={e => setLContractor(e.target.value)}/>
                     </div>
                     <div>
-                      <label className="form-label">Job Description / Scope of Work</label>
+                      <label className="form-label">Scope of Work</label>
                       <textarea className="form-input" rows={3}
-                        placeholder="Detailed scope of work, deliverables, timeline…"
+                        placeholder="Detailed scope, deliverables, timeline…"
                         value={lJobDesc} onChange={e => setLJobDesc(e.target.value)}/>
                     </div>
                   </>
                 )}
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="form-label">Waybill Number</label>
-                    <input className="form-input font-mono" placeholder="WB-001" value={lWaybill} onChange={e => setLWaybill(e.target.value)}/>
-                  </div>
-                  <div>
-                    <label className="form-label">Invoice Number</label>
-                    <input className="form-input font-mono" placeholder="INV-001" value={lInvoice} onChange={e => setLInvoice(e.target.value)}/>
-                  </div>
-                </div>
-
                 <div>
                   <label className="form-label">Notes</label>
-                  <textarea className="form-input" rows={2} placeholder="Additional notes…" value={lNotes} onChange={e => setLNotes(e.target.value)}/>
+                  <textarea className="form-input" rows={2} placeholder="Additional notes"
+                    value={lNotes} onChange={e => setLNotes(e.target.value)}/>
                 </div>
-
-                <button type="submit" disabled={lSaving}
+                <button type="submit" disabled={lpoSaving || !lTitle.trim()}
                   className="w-full py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2"
-                  style={{ background: 'var(--amber)', color: '#000' }}>
-                  {lSaving ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>}
-                  Create {tab === 'outsourcing' ? 'Job' : 'LPO'}
+                  style={{ background: lpoSaving ? 'rgba(240,165,0,0.4)' : 'var(--amber)', color: '#000' }}>
+                  {lpoSaving ? <Loader2 size={14} className="animate-spin"/> : <Save size={14}/>}
+                  {lpoSaving ? 'Saving…' : `Create ${tab === 'outsourcing' ? 'Job' : 'LPO'}`}
                 </button>
               </form>
             </div>
           )}
 
-          {/* ── LPO / Job list ─────────────────────────── */}
-          {filteredLPO.length === 0 ? (
+          {/* LPO list */}
+          {lpoLoading ? (
+            <div className="space-y-3">
+              {[1,2,3].map(i => <div key={i} className="card animate-pulse" style={{ height: 100 }}/>)}
+            </div>
+          ) : filteredLPO.length === 0 ? (
             <div className="card text-center py-10">
               <FileText size={32} style={{ color: 'var(--text-3)', margin: '0 auto 12px' }}/>
               <p className="text-sm" style={{ color: 'var(--text-2)' }}>
-                {search || lpoFilter !== 'all' ? 'No entries match' : `No ${tab === 'outsourcing' ? 'outsourced jobs' : 'LPOs'} yet`}
+                {search || lpoFilter !== 'all' ? 'No entries match' : `No ${tab === 'outsourcing' ? 'outsourced jobs' : 'purchase orders'} yet`}
               </p>
             </div>
           ) : (
             <div className="space-y-3">
-              {filteredLPO.map(lpo => {
-                const stage = LPO_PIPELINE.find(s => s.key === lpo.status)!;
-                const stageIdx = LPO_PIPELINE.findIndex(s => s.key === lpo.status);
-                const isExpanded = expandedLPO === lpo.id;
-                const isDone = lpo.status === 'job_completed';
+              {filteredLPO.map(po => {
+                const stage    = lpoStage(po.status);
+                const stageIdx = LPO_PIPELINE.findIndex(s => s.key === po.status);
+                const isExpanded = expandedId === po.id;
+                const isDone   = po.status === 'job_completed';
+                const prioColor = PRIORITY_COLOR[po.priority];
                 return (
-                  <div key={lpo.id} className="card"
-                    style={{ borderLeft: `3px solid ${PRIORITY_COLOR[lpo.priority]}` }}>
-                    {/* Header */}
+                  <div key={po.id} className="card" style={{ borderLeft: `3px solid ${prioColor}` }}>
+                    {/* Card header */}
                     <div className="flex items-start gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap mb-1">
-                          {lpo.lpo_number && (
-                            <span className="tag-chip text-xs font-mono">{lpo.lpo_number}</span>
+                          {po.lpo_number && (
+                            <span className="tag-chip text-xs font-mono">{po.lpo_number}</span>
                           )}
                           <span className="chip text-xs"
-                            style={{
-                              background: `${PRIORITY_COLOR[lpo.priority]}18`,
-                              color:      PRIORITY_COLOR[lpo.priority],
-                              border:     `1px solid ${PRIORITY_COLOR[lpo.priority]}30`,
-                              fontSize: 9, padding: '1px 7px', textTransform: 'uppercase',
-                            }}>
-                            {lpo.priority}
+                            style={{ background: `${prioColor}18`, color: prioColor,
+                              border: `1px solid ${prioColor}30`, fontSize: 9, padding: '1px 7px', textTransform: 'uppercase' }}>
+                            {po.priority}
                           </span>
-                          {lpo.is_outsourced && (
+                          {po.is_outsourced && (
                             <span className="chip text-xs"
-                              style={{ background: 'rgba(163,113,247,0.1)', color: 'var(--purple)', border: '1px solid rgba(163,113,247,0.25)', fontSize: 9, padding: '1px 7px' }}>
+                              style={{ background: 'rgba(163,113,247,0.1)', color: 'var(--purple)',
+                                border: '1px solid rgba(163,113,247,0.25)', fontSize: 9, padding: '1px 7px' }}>
                               🔧 Outsourced
                             </span>
                           )}
                         </div>
-                        <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text)' }}>{lpo.title}</p>
-                        <LPOBadge status={lpo.status}/>
+                        <p className="text-sm font-semibold mb-1">{po.title}</p>
+                        {/* Stage badge */}
+                        <span className="chip text-xs flex items-center gap-1 inline-flex"
+                          style={{ background: `${stage.color}18`, color: stage.color,
+                            border: `1px solid ${stage.color}30`, fontSize: 10, padding: '2px 8px' }}>
+                          {stage.label}
+                        </span>
                       </div>
                       <div className="flex items-center gap-1 flex-shrink-0">
-                        <button onClick={() => setExpandedLPO(isExpanded ? null : lpo.id)}
-                          style={{ color: 'var(--text-3)' }}>
-                          {isExpanded ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
+                        <button onClick={() => setExpandedId(isExpanded ? null : po.id)}
+                          style={{ color: 'var(--text-3)', padding: 4 }}>
+                          {isExpanded ? <ChevronUp size={15}/> : <ChevronDown size={15}/>}
                         </button>
-                        <button onClick={() => deleteLPO(lpo.id)} style={{ color: 'var(--text-3)' }}>
-                          <X size={14}/>
+                        <button onClick={() => handleDeleteLPO(po.id)} disabled={deleting === po.id}
+                          style={{ color: 'var(--text-3)', padding: 4 }}>
+                          {deleting === po.id ? <Loader2 size={13} className="animate-spin"/> : <Trash2 size={13}/>}
                         </button>
                       </div>
                     </div>
 
-                    {/* Mini pipeline progress bar */}
-                    <div className="flex items-center gap-1 mt-3">
+                    {/* Progress bar */}
+                    <div className="flex items-center gap-0.5 mt-3">
                       {LPO_PIPELINE.map((s, i) => (
-                        <div key={s.key} className="flex-1 h-1.5 rounded-full transition-all"
-                          style={{ background: i <= stageIdx ? stage.color : 'var(--border)' }}/>
+                        <div key={s.key} className="flex-1 rounded-full transition-all duration-500"
+                          style={{ height: 4, background: i <= stageIdx ? stage.color : 'var(--border)' }}/>
                       ))}
                     </div>
                     <p className="text-xs mt-1" style={{ color: 'var(--text-3)' }}>
-                      Stage {stageIdx + 1} of {LPO_PIPELINE.length} · {fmtRelative(lpo.created_at)}
+                      Stage {stageIdx + 1} of {LPO_PIPELINE.length} · {fmtRelative(po.created_at)}
                     </p>
 
                     {/* Expanded details */}
                     {isExpanded && (
-                      <div className="mt-3 pt-3 space-y-2" style={{ borderTop: '1px solid var(--border)' }}>
-                        {lpo.items && (
+                      <div className="mt-3 pt-3 space-y-2.5"
+                        style={{ borderTop: '1px solid var(--border)' }}>
+                        {po.items && (
                           <div>
-                            <p className="text-xs font-bold mb-0.5" style={{ color: 'var(--text-3)' }}>ITEMS</p>
-                            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>{lpo.items}</p>
+                            <p className="form-label mb-0.5">ITEMS</p>
+                            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>{po.items}</p>
                           </div>
                         )}
-                        {lpo.vendor_quotes && (
+                        {po.vendor_quotes && (
                           <div>
-                            <p className="text-xs font-bold mb-0.5" style={{ color: 'var(--text-3)' }}>COMPARATIVE ANALYSIS</p>
-                            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>{lpo.vendor_quotes}</p>
+                            <p className="form-label mb-0.5">COMPARATIVE ANALYSIS</p>
+                            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>{po.vendor_quotes}</p>
                           </div>
                         )}
-                        {lpo.job_description && (
+                        {po.job_description && (
                           <div>
-                            <p className="text-xs font-bold mb-0.5" style={{ color: 'var(--text-3)' }}>SCOPE OF WORK</p>
-                            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>{lpo.job_description}</p>
+                            <p className="form-label mb-0.5">SCOPE OF WORK</p>
+                            <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>{po.job_description}</p>
                           </div>
                         )}
-                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                          {lpo.supplier    && <p style={{ color: 'var(--text-3)' }}>Supplier: <span style={{ color: 'var(--text-2)' }}>{lpo.supplier}</span></p>}
-                          {lpo.contractor  && <p style={{ color: 'var(--text-3)' }}>Contractor: <span style={{ color: 'var(--text-2)' }}>{lpo.contractor}</span></p>}
-                          {lpo.total_cost  && <p style={{ color: 'var(--text-3)' }}>Cost: <span style={{ color: 'var(--amber)' }} className="font-bold">{lpo.currency} {lpo.total_cost.toLocaleString()}</span></p>}
-                          {lpo.raised_by   && <p style={{ color: 'var(--text-3)' }}>Raised by: <span style={{ color: 'var(--text-2)' }}>{lpo.raised_by}</span></p>}
-                          {lpo.approved_by && <p style={{ color: 'var(--text-3)' }}>Approved by: <span style={{ color: 'var(--text-2)' }}>{lpo.approved_by}</span></p>}
-                          {lpo.equipment_tag && <p style={{ color: 'var(--text-3)' }}>Equipment: <span className="tag-chip" style={{ fontSize: 10 }}>{lpo.equipment_tag}</span></p>}
-                          {lpo.waybill_number && <p style={{ color: 'var(--text-3)' }}>Waybill: <span className="font-mono" style={{ color: 'var(--text-2)' }}>{lpo.waybill_number}</span></p>}
-                          {lpo.invoice_number && <p style={{ color: 'var(--text-3)' }}>Invoice: <span className="font-mono" style={{ color: 'var(--text-2)' }}>{lpo.invoice_number}</span></p>}
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                          {po.supplier    && <p style={{ color: 'var(--text-3)' }}>Supplier: <span style={{ color: 'var(--text-2)' }}>{po.supplier}</span></p>}
+                          {po.contractor  && <p style={{ color: 'var(--text-3)' }}>Contractor: <span style={{ color: 'var(--text-2)' }}>{po.contractor}</span></p>}
+                          {po.total_cost  != null && (
+                            <p style={{ color: 'var(--text-3)' }}>Cost: <span className="font-bold" style={{ color: 'var(--amber)' }}>{po.currency} {po.total_cost.toLocaleString()}</span></p>
+                          )}
+                          {po.raised_by   && <p style={{ color: 'var(--text-3)' }}>Raised by: <span style={{ color: 'var(--text-2)' }}>{po.raised_by}</span></p>}
+                          {po.approved_by && <p style={{ color: 'var(--text-3)' }}>Approved by: <span style={{ color: 'var(--text-2)' }}>{po.approved_by}</span></p>}
+                          {po.equipment_tag && <p style={{ color: 'var(--text-3)' }}>Equipment: <span className="tag-chip" style={{ fontSize: 10 }}>{po.equipment_tag}</span></p>}
+                          {po.waybill_number && <p style={{ color: 'var(--text-3)' }}>Waybill: <span className="font-mono" style={{ color: 'var(--text-2)' }}>{po.waybill_number}</span></p>}
+                          {po.invoice_number && <p style={{ color: 'var(--text-3)' }}>Invoice: <span className="font-mono" style={{ color: 'var(--text-2)' }}>{po.invoice_number}</span></p>}
+                          {po.date_raised    && <p style={{ color: 'var(--text-3)' }}>Raised: {fmtDate(po.date_raised)}</p>}
+                          {po.date_approved  && <p style={{ color: 'var(--text-3)' }}>Approved: {fmtDate(po.date_approved)}</p>}
+                          {po.date_received  && <p style={{ color: 'var(--text-3)' }}>Received: {fmtDate(po.date_received)}</p>}
+                          {po.date_completed && <p style={{ color: 'var(--text-3)' }}>Completed: {fmtDate(po.date_completed)}</p>}
                         </div>
-                        {lpo.notes && (
-                          <p className="text-xs leading-relaxed" style={{ color: 'var(--text-3)' }}>{lpo.notes}</p>
-                        )}
+                        {po.notes && <p className="text-xs" style={{ color: 'var(--text-3)' }}>{po.notes}</p>}
                       </div>
                     )}
 
                     {/* Advance button */}
-                    {!isDone && (
-                      <button
-                        onClick={() => advanceLPO(lpo.id)}
+                    {!isDone ? (
+                      <button onClick={() => handleAdvance(po)} disabled={advancing === po.id}
                         className="w-full mt-3 py-2 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all"
                         style={{ background: `${stage.color}15`, color: stage.color, border: `1px solid ${stage.color}30` }}>
-                        <ArrowRight size={13}/>
-                        Advance to: {LPO_PIPELINE[stageIdx + 1]?.label || 'Complete'}
+                        {advancing === po.id
+                          ? <Loader2 size={12} className="animate-spin"/>
+                          : <ArrowRight size={12}/>}
+                        {advancing === po.id ? 'Updating…' : `Advance → ${LPO_PIPELINE[stageIdx + 1]?.label}`}
                       </button>
-                    )}
-                    {isDone && (
+                    ) : (
                       <div className="mt-3 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold"
                         style={{ background: 'rgba(52,208,88,0.08)', color: 'var(--green)', border: '1px solid rgba(52,208,88,0.2)' }}>
                         <CheckCircle size={13}/> Job Completed
-                        {lpo.date_completed && <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· {fmtDate(lpo.date_completed)}</span>}
+                        {po.date_completed && (
+                          <span style={{ color: 'var(--text-3)', fontWeight: 400 }}>· {fmtDate(po.date_completed)}</span>
+                        )}
                       </div>
                     )}
                   </div>

@@ -6,6 +6,7 @@ import type {
   Profile, Equipment, Fault, Activity, Resolution,
   Category, ActivityType, FaultCategory, Stats, PartItem,
   ShiftLog, Task, EquipmentHealth, FeedItem,
+  SparePart, PurchaseOrder, LPOStatus,
 } from '@/types';
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -787,4 +788,156 @@ export async function getKPIData(supabase: SupabaseClient, userId: string, year:
       resolutionRate:      faults.length > 0 ? Math.round((resolvedFaults.length / faults.length) * 100) : 0,
     },
   };
+}
+
+// ── Spare Parts ───────────────────────────────────────────────
+
+export async function getSpareParts(
+  supabase: SupabaseClient,
+  userId: string,
+  orgId?: string
+): Promise<SparePart[]> {
+  let query = supabase
+    .from('spare_parts')
+    .select('*')
+    .order('name');
+  // Show own parts + org parts if org set
+  if (orgId) {
+    query = query.or(`user_id.eq.${userId},org_id.eq.${orgId}`);
+  } else {
+    query = query.eq('user_id', userId);
+  }
+  const { data } = await query;
+  return data || [];
+}
+
+export async function createSparePart(
+  supabase: SupabaseClient,
+  userId: string,
+  part: Omit<SparePart, 'id' | 'user_id' | 'created_at' | 'updated_at'>
+): Promise<SparePart> {
+  const qty    = part.quantity;
+  const minQty = part.min_quantity;
+  const status: SparePart['status'] =
+    qty === 0 ? 'out_of_stock' : qty <= minQty ? 'low_stock' : 'in_stock';
+  const { data, error } = await supabase
+    .from('spare_parts')
+    .insert({ ...part, user_id: userId, status })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateSparePart(
+  supabase: SupabaseClient,
+  id: string,
+  updates: Partial<SparePart>
+): Promise<SparePart> {
+  // Recompute status whenever quantity changes
+  if (updates.quantity !== undefined) {
+    const minQty = updates.min_quantity ?? 1;
+    updates.status =
+      updates.quantity === 0 ? 'out_of_stock'
+      : updates.quantity <= minQty ? 'low_stock'
+      : 'in_stock';
+  }
+  const { data, error } = await supabase
+    .from('spare_parts')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteSparePart(supabase: SupabaseClient, id: string): Promise<void> {
+  const { error } = await supabase.from('spare_parts').delete().eq('id', id);
+  if (error) throw error;
+}
+
+// ── Purchase Orders ───────────────────────────────────────────
+
+export async function getPurchaseOrders(
+  supabase: SupabaseClient,
+  userId: string,
+  orgId?: string,
+  filters?: { status?: LPOStatus; is_outsourced?: boolean }
+): Promise<PurchaseOrder[]> {
+  let query = supabase
+    .from('purchase_orders')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  if (orgId) {
+    query = query.or(`user_id.eq.${userId},org_id.eq.${orgId}`);
+  } else {
+    query = query.eq('user_id', userId);
+  }
+  if (filters?.status)       query = query.eq('status', filters.status);
+  if (filters?.is_outsourced !== undefined) query = query.eq('is_outsourced', filters.is_outsourced);
+
+  const { data } = await query;
+  return data || [];
+}
+
+export async function createPurchaseOrder(
+  supabase: SupabaseClient,
+  userId: string,
+  po: Omit<PurchaseOrder, 'id' | 'user_id' | 'created_at' | 'updated_at'>
+): Promise<PurchaseOrder> {
+  // Auto-generate LPO number based on count
+  const { count } = await supabase
+    .from('purchase_orders')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId);
+  const lpoNumber = `LPO-${String((count || 0) + 1).padStart(4, '0')}`;
+  const { data, error } = await supabase
+    .from('purchase_orders')
+    .insert({ ...po, user_id: userId, lpo_number: lpoNumber })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updatePurchaseOrder(
+  supabase: SupabaseClient,
+  id: string,
+  updates: Partial<PurchaseOrder>
+): Promise<PurchaseOrder> {
+  const { data, error } = await supabase
+    .from('purchase_orders')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deletePurchaseOrder(supabase: SupabaseClient, id: string): Promise<void> {
+  const { error } = await supabase.from('purchase_orders').delete().eq('id', id);
+  if (error) throw error;
+}
+
+export async function advancePurchaseOrderStatus(
+  supabase: SupabaseClient,
+  id: string,
+  currentStatus: LPOStatus
+): Promise<PurchaseOrder> {
+  const pipeline: LPOStatus[] = [
+    'lpo_to_raise', 'lpo_raised', 'comparative_analysis',
+    'po_approved', 'in_transit', 'received', 'job_completed',
+  ];
+  const idx = pipeline.indexOf(currentStatus);
+  if (idx === -1 || idx >= pipeline.length - 1) throw new Error('Already at final stage');
+  const nextStatus = pipeline[idx + 1];
+  const now = new Date().toISOString();
+  const dateUpdates: Partial<PurchaseOrder> = {};
+  if (nextStatus === 'po_approved')   dateUpdates.date_approved  = now;
+  if (nextStatus === 'received')      dateUpdates.date_received  = now;
+  if (nextStatus === 'job_completed') dateUpdates.date_completed = now;
+  return updatePurchaseOrder(supabase, id, { status: nextStatus, ...dateUpdates });
 }
