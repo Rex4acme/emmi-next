@@ -10,7 +10,7 @@ import { createBrowserClient } from '@/lib/supabase';
 import {
   Zap, LayoutDashboard, Cpu, AlertTriangle,
   ClipboardList, User, LogOut, Menu, X, Bell, Trophy,
-  Rss, CheckSquare, Heart, Circle,
+  Rss, CheckSquare, Heart, Circle, Package,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -19,6 +19,7 @@ const NAV_ITEMS = [
   { href: '/equipment',  icon: Cpu,             label: 'Equipment'  },
   { href: '/faults',     icon: AlertTriangle,   label: 'Faults'     },
   { href: '/activities', icon: ClipboardList,   label: 'Activities' },
+  { href: '/inventory',  icon: Package,         label: 'Inventory'  },
   { href: '/tasks',      icon: CheckSquare,     label: 'Tasks'      },
   { href: '/health',     icon: Heart,           label: 'Health'     },
   { href: '/kpi',        icon: Trophy,          label: 'KPI'        },

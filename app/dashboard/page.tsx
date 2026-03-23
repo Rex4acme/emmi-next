@@ -73,21 +73,10 @@ function OnlineWidget({
 
   if (total === 0) return null;
 
-  // ── Only show COLLEAGUES in the pill, never yourself ──────
-  // Your avatar is already in the header — showing it again here looks bad.
-  const shown    = others.slice(0, MAX_AVATARS);
-  const overflow = others.length - MAX_AVATARS;
-
-  // When alone: just a quiet dot — no avatar duplication
-  if (others.length === 0) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-        <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#34d058', animation: 'pulse 2s ease-in-out infinite' }}/>
-        <span style={{ fontSize: 10, color: 'var(--text-3)', whiteSpace: 'nowrap' }}>Only you</span>
-        <style>{`@keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(0.85)} }`}</style>
-      </div>
-    );
-  }
+  // People to show as avatar circles (show yourself first)
+  const displayUsers = me ? [me, ...others] : others;
+  const shown   = displayUsers.slice(0, MAX_AVATARS);
+  const overflow = total - MAX_AVATARS; // could be negative — clamp below
 
   return (
     <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
@@ -108,36 +97,39 @@ function OnlineWidget({
         {/* Pulsing green dot */}
         <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#34d058', flexShrink: 0, animation: 'pulse 2s ease-in-out infinite' }}/>
 
-        {/* Stacked colleague avatars only — no self */}
+        {/* Stacked avatar circles */}
         <div style={{ display: 'flex', alignItems: 'center' }}>
           {shown.map((u, i) => (
             <div
               key={u.userId}
-              title={u.name}
+              title={u.userId === currentUserId ? 'You' : u.name}
               style={{
                 width: 20, height: 20, borderRadius: '50%',
-                border: '1.5px solid #34d058',
+                border: `1.5px solid ${u.userId === currentUserId ? 'var(--amber)' : '#34d058'}`,
                 background: 'var(--surface)',
                 overflow: 'hidden',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 marginLeft: i === 0 ? 0 : -6,
                 zIndex: shown.length - i,
-                position: 'relative', flexShrink: 0,
+                position: 'relative',
+                flexShrink: 0,
               }}
             >
               {u.avatar
                 ? <img src={u.avatar} alt={u.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }}/>
-                : <span style={{ fontSize: 8, fontWeight: 700, color: '#34d058' }}>
+                : <span style={{ fontSize: 8, fontWeight: 700, color: u.userId === currentUserId ? 'var(--amber)' : '#34d058' }}>
                     {u.name.charAt(0).toUpperCase()}
                   </span>
               }
             </div>
           ))}
 
+          {/* Overflow bubble: +N */}
           {overflow > 0 && (
             <div style={{
               width: 20, height: 20, borderRadius: '50%',
-              border: '1.5px solid var(--border)', background: 'var(--surface)',
+              border: '1.5px solid var(--border)',
+              background: 'var(--surface)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               marginLeft: -6, zIndex: 0, position: 'relative', flexShrink: 0,
             }}>
@@ -146,9 +138,9 @@ function OnlineWidget({
           )}
         </div>
 
-        {/* Count — colleagues only */}
+        {/* Count label */}
         <span style={{ fontSize: 10, fontWeight: 700, color: '#34d058', whiteSpace: 'nowrap' }}>
-          {others.length} online
+          {total} online
         </span>
       </button>
 

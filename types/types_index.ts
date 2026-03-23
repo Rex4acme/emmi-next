@@ -327,3 +327,69 @@ export interface AIAssistantResult {
   safety_note?: string;
   next_step?: string;
 }
+
+// ── Spare Part ────────────────────────────────────────────────
+export type StockStatus = 'in_stock' | 'low_stock' | 'out_of_stock' | 'ordered';
+
+export interface SparePart {
+  id: string;
+  user_id: string;
+  org_id?: string;
+  name: string;
+  part_number?: string;
+  description?: string;
+  category: string;
+  quantity: number;
+  min_quantity: number;
+  unit: string;
+  location?: string;
+  supplier?: string;
+  unit_cost?: number;
+  status: StockStatus;
+  notes?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// ── Purchase Order (LPO) ──────────────────────────────────────
+export type LPOStatus =
+  | 'lpo_to_raise'
+  | 'lpo_raised'
+  | 'comparative_analysis'
+  | 'po_approved'
+  | 'in_transit'
+  | 'received'
+  | 'job_completed';
+
+export type LPOPriority = 'low' | 'medium' | 'high' | 'critical';
+
+export interface PurchaseOrder {
+  id: string;
+  user_id: string;
+  org_id?: string;
+  lpo_number?: string;
+  title: string;
+  description?: string;
+  status: LPOStatus;
+  priority: LPOPriority;
+  supplier?: string;
+  equipment_tag?: string;
+  items?: string;
+  total_cost?: number;
+  currency: string;
+  raised_by?: string;
+  approved_by?: string;
+  date_raised?: string;
+  date_approved?: string;
+  date_received?: string;
+  date_completed?: string;
+  vendor_quotes?: string;
+  waybill_number?: string;
+  invoice_number?: string;
+  job_description?: string;
+  is_outsourced: boolean;
+  contractor?: string;
+  notes?: string;
+  created_at?: string;
+  updated_at?: string;
+}
