@@ -4,19 +4,41 @@
 // Also generates QR codes for any equipment tag.
 // Uses jsQR library loaded via CDN — no install needed.
 
-import { useState, useEffect, useRef } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { createBrowserClient } from '@/lib/supabase';
 import AppShell from '@/components/layout/AppShell';
 import { Scan, QrCode, Camera, X, Loader2, CheckCircle, Search } from 'lucide-react';
 
+// Types
+interface Equipment {
+  id: string;
+  tag_id: string;
+  name: string;
+  status: string;
+  location?: string;
+}
+
+interface ScannedEquipment extends Equipment {
+  location: string;
+}
+
 // QR code generation via QRServer API (free, no key)
 function QRImage({ value, size = 200 }: { value: string; size?: number }) {
   const url = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(value)}&bgcolor=1a2030&color=f0a500&format=svg`;
   return (
-    <img src={url} alt="QR Code" width={size} height={size}
-      style={{ borderRadius: 12, border: '2px solid rgba(240,165,0,0.3)' }}/>
+    <img
+      src={url}
+      alt={`QR Code for ${value}`}
+      width={size}
+      height={size}
+      style={{ borderRadius: 12, border: '2px solid rgba(240,165,0,0.3)' }}
+      onError={(e) => {
+        e.currentTarget.style.display = 'none';
+        console.error('Failed to load QR code');
+      }}
+    />
   );
 }
 
@@ -30,33 +52,43 @@ export default function QRPage() {
 
   const [mode,       setMode]       = useState<'scan' | 'generate'>('scan');
   const [scanning,   setScanning]   = useState(false);
-  const [found,      setFound]      = useState<any>(null);
+  const [found,      setFound]      = useState<ScannedEquipment | null>(null);
   const [error,      setError]      = useState('');
-  const [equipment,  setEquipment]  = useState<any[]>([]);
-  const [selected,   setSelected]   = useState('');
-  const [tagSearch,  setTagSearch]  = useState('');
-  const [jsQR,       setJsQR]       = useState<any>(null);
+  const [equipment,  setEquipment]  = useState<Equipment[]>([]);
+  const [selected,   setSelected]   = useState<string>('');
+  const [loading,    setLoading]    = useState(false);
 
-  // Load jsQR dynamically
+  // Cleanup on unmount
   useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js';
-    script.onload = () => setJsQR(() => (window as any).jsQR);
-    document.head.appendChild(script);
-    return () => { stopCamera(); };
-  }, []);
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
 
   useEffect(() => {
     async function loadEquipment() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase.from('equipment').select('id, tag_id, name, status').eq('user_id', user.id).order('tag_id');
-      setEquipment(data || []);
+      setLoading(true);
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data, error } = await supabase
+          .from('equipment')
+          .select('id, tag_id, name, status')
+          .eq('user_id', user.id)
+          .order('tag_id');
+        if (error) throw error;
+        setEquipment(data || []);
+      } catch (err) {
+        console.error('Failed to load equipment:', err);
+        setError('Failed to load equipment list.');
+      } finally {
+        setLoading(false);
+      }
     }
     loadEquipment();
   }, []);
 
-  async function startCamera() {
+  const startCamera = useCallback(async () => {
     setError('');
     setFound(null);
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -97,42 +129,52 @@ export default function QRPage() {
         setError(`Camera error: ${err.message || 'Unknown error'}`);
       }
     }
-  }
+  }, []);
 
-  function stopCamera() {
+  const stopCamera = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
     }
     setScanning(false);
-  }
+  }, []);
 
-  function scanFrame() {
-    if (!videoRef.current || !canvasRef.current || !jsQR) {
-      rafRef.current = requestAnimationFrame(scanFrame);
+  const scanFrame = useCallback(() => {
+    if (!videoRef.current || !canvasRef.current || !jsQR || !scanning) {
       return;
     }
-    const video  = videoRef.current;
+    const video = videoRef.current;
     const canvas = canvasRef.current;
     if (video.readyState !== video.HAVE_ENOUGH_DATA) {
       rafRef.current = requestAnimationFrame(scanFrame);
       return;
     }
-    canvas.width  = video.videoWidth;
+    canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     const ctx = canvas.getContext('2d')!;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+    const code = jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: 'dontInvert'
+    });
 
     if (code?.data) {
+      // Vibrate on success if supported
+      if ('vibrate' in navigator) {
+        navigator.vibrate(200);
+      }
       stopCamera();
       handleScanned(code.data);
     } else {
-      rafRef.current = requestAnimationFrame(scanFrame);
+      // Throttle scanning to ~10fps to reduce CPU usage
+      setTimeout(() => {
+        if (scanning) {
+          rafRef.current = requestAnimationFrame(scanFrame);
+        }
+      }, 100);
     }
-  }
+  }, [jsQR, scanning, stopCamera]);
 
   async function handleScanned(value: string) {
     // QR value format: emmi://equipment/{tag_id} OR just the tag_id
@@ -294,20 +336,39 @@ export default function QRPage() {
 
             {!selected ? (
               <div className="space-y-2 max-h-80 overflow-y-auto">
-                {filteredEq.map(eq => (
-                  <button key={eq.id} onClick={() => setSelected(eq.id)}
-                    className="w-full card flex items-center gap-3 hover:border-white/20 transition-all text-left"
-                    style={{ padding: '10px 14px' }}>
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                      style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                      <QrCode size={14} style={{ color: 'var(--amber)' }}/>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{eq.name}</p>
-                      <p className="font-mono text-xs" style={{ color: 'var(--amber)' }}>{eq.tag_id}</p>
-                    </div>
-                  </button>
-                ))}
+                {loading ? (
+                  <div className="text-center py-8">
+                    <Loader2 size={24} className="animate-spin mx-auto mb-2" style={{ color: 'var(--amber)' }}/>
+                    <p className="text-xs" style={{ color: 'var(--text-2)' }}>Loading equipment...</p>
+                  </div>
+                ) : filteredEq.length === 0 ? (
+                  <div className="text-center py-8">
+                    <p className="text-xs" style={{ color: 'var(--text-2)' }}>
+                      {tagSearch ? 'No equipment found matching your search.' : 'No equipment available.'}
+                    </p>
+                  </div>
+                ) : (
+                  filteredEq.map(eq => (
+                    <button
+                      key={eq.id}
+                      onClick={() => setSelected(eq.id)}
+                      className="w-full card flex items-center gap-3 hover:border-white/20 transition-all text-left"
+                      style={{ padding: '10px 14px' }}
+                      aria-label={`Select equipment ${eq.name} with tag ${eq.tag_id}`}
+                    >
+                    >
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                        <QrCode size={14} style={{ color: 'var(--amber)' }}/>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{eq.name}</p>
+                        <p className="font-mono text-xs" style={{ color: 'var(--amber)' }}>{eq.tag_id}</p>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
               </div>
             ) : (
               <div>
