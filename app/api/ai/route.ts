@@ -1,156 +1,119 @@
-// app/api/ai/route.ts — AI Proxy with 4-level fallback chain
+// app/api/ai/route.ts — EMMI AI Proxy
 //
-// REQUEST FLOW:
-//   1. Pollinations AI  — no key, unlimited, free forever
-//   2. Groq             — free key, 14,400 requests/day
-//   3. Together AI      — free key, $1 free credit
-//   4. OpenRouter       — free key, access to many free models
+// PROVIDER ORDER (fastest/best first):
+//   1. Groq (llama-3.3-70b-versatile) — PRIMARY — blazing fast, free key
+//   2. Groq (llama-3.1-8b-instant)    — GROQ FALLBACK — ultra fast if 70b rate-limited
+//   3. Pollinations AI                 — FINAL FALLBACK — no key, always available
 //
-// The app automatically moves to the next provider if one fails.
-// NO key is required for Pollinations — it always works as base layer.
-// Add the other keys in Vercel env vars for extra reliability.
+// To enable: Add GROQ_API_KEY to Vercel → Settings → Environment Variables
+// Get free key at: console.groq.com (free, no credit card)
+// Free tier: 14,400 requests/day on 70b, 14,400/day on 8b
 
 import { NextRequest, NextResponse } from 'next/server';
 
-// ── Shared system prompt for EMMI ─────────────────────────────
-const EMMI_SYSTEM = `You are EMMI, an expert AI assistant for electrical engineers. 
-You specialise in electrical maintenance, fault diagnosis, equipment troubleshooting, 
-DCS/SCADA systems, power systems, and industrial electrical engineering.
-Give precise, technical, practical answers. Be concise but thorough.
-When analysing faults, consider: root cause, safety implications, and corrective actions.`;
+const EMMI_SYSTEM = `You are EMMI — an expert AI assistant for industrial electrical engineers with 20+ years of experience in:
+- Electrical fault diagnosis and root cause analysis
+- Power systems (HV/MV/LV), transformers, motors, switchgear, VFDs
+- Industrial automation, DCS/SCADA, PLCs
+- Preventive and corrective maintenance planning
+- Nigerian/West African industrial plant standards (NEMSA, SON, IEC, IEEE)
+- Occupational safety (PTW, LOTO, arc flash, hot work)
 
-// ── Main handler ──────────────────────────────────────────────
+Give precise, technical, practical answers. Use proper electrical engineering terminology.
+Always flag safety implications for high-voltage or live-line work.
+When asked to analyse a fault, structure your response as valid JSON only — no markdown, no preamble.`;
+
 export async function POST(request: NextRequest) {
   const body        = await request.json().catch(() => ({}));
   const userMessages = body.messages || [];
-  const systemPrompt = body.system || EMMI_SYSTEM;
-  const userText     = userMessages.map((m: any) => m.content).join('\n');
+  const systemPrompt = body.system   || EMMI_SYSTEM;
 
-  // Try each provider in order — move to next if current fails
+  // Pass full conversation history to Groq for memory
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...userMessages,
+  ];
+
+  // Provider chain — tries each in order
   const providers = [
-    () => tryPollinations(userText, systemPrompt),
-    () => tryGroq(userText, systemPrompt),
-    () => tryTogetherAI(userText, systemPrompt),
-    () => tryOpenRouter(userText, systemPrompt),
+    () => tryGroq(messages, 'llama-3.3-70b-versatile'),   // Best quality
+    () => tryGroq(messages, 'llama-3.1-8b-instant'),      // Fast fallback
+    () => tryPollinations(userMessages, systemPrompt),    // No-key fallback
   ];
 
   for (const provider of providers) {
     try {
       const result = await provider();
       if (result) {
-        return NextResponse.json({ content: [{ type: 'text', text: result }] });
+        return NextResponse.json({
+          content: [{ type: 'text', text: result }],
+        });
       }
     } catch (err) {
-      // This provider failed — silently try the next one
-      console.error('Provider failed, trying next:', err);
+      console.error('AI provider failed, trying next:', err);
       continue;
     }
   }
 
-  // All providers failed — return friendly message
   return NextResponse.json({
-    content: [{ type: 'text', text: 'AI is temporarily unavailable across all providers. Please try again in a few minutes.' }]
+    content: [{ type: 'text', text: 'AI is temporarily unavailable. Please try again in a moment.' }],
   });
 }
 
-// ── PROVIDER 1: Pollinations AI ───────────────────────────────
-// No API key. No account. Unlimited. Always try this first.
-async function tryPollinations(userText: string, systemPrompt: string): Promise<string | null> {
-  const fullPrompt = `${systemPrompt}\n\nUser: ${userText}\n\nAssistant:`;
-  const encoded    = encodeURIComponent(fullPrompt);
-
-  const res = await fetch(`https://text.pollinations.ai/${encoded}`, {
-    method:  'GET',
-    headers: { Accept: 'text/plain' },
-    signal:  AbortSignal.timeout(15000), // 15 second timeout
-  });
-
-  if (!res.ok) return null;
-
-  const text = await res.text();
-  return text.trim() || null;
-}
-
-// ── PROVIDER 2: Groq ──────────────────────────────────────────
-// Free key at: console.groq.com — 14,400 requests/day free
-// Add GROQ_API_KEY to Vercel environment variables
-async function tryGroq(userText: string, systemPrompt: string): Promise<string | null> {
+// ── PROVIDER 1 & 2: Groq ─────────────────────────────────────
+// OpenAI-compatible endpoint — supports full conversation history
+async function tryGroq(
+  messages: { role: string; content: string }[],
+  model: string
+): Promise<string | null> {
   const key = process.env.GROQ_API_KEY;
-  if (!key) return null; // Skip if no key configured
+  if (!key) return null;
 
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method:  'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization:  `Bearer ${key}`,
+    },
     body: JSON.stringify({
-      model:       'llama3-8b-8192', // Fast, free Llama 3 model on Groq
-      messages:    [{ role: 'system', content: systemPrompt }, { role: 'user', content: userText }],
-      max_tokens:  1500,
-      temperature: 0.7,
+      model,
+      messages,
+      max_tokens:  2000,
+      temperature: 0.4,  // Lower = more precise/factual for engineering
     }),
     signal: AbortSignal.timeout(20000),
   });
 
-  if (!res.ok) return null;
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    console.error(`Groq ${model} error:`, err);
+    return null;
+  }
 
   const data = await res.json();
   return data.choices?.[0]?.message?.content?.trim() || null;
 }
 
-// ── PROVIDER 3: Together AI ───────────────────────────────────
-// Free key at: api.together.xyz — $1 free credit, pay-as-you-go after
-// Add TOGETHER_API_KEY to Vercel environment variables
-async function tryTogetherAI(userText: string, systemPrompt: string): Promise<string | null> {
-  const key = process.env.TOGETHER_API_KEY;
-  if (!key) return null;
+// ── PROVIDER 3: Pollinations (no key, always available) ───────
+async function tryPollinations(
+  userMessages: { role: string; content: string }[],
+  systemPrompt: string
+): Promise<string | null> {
+  const lastUserMsg = userMessages.filter(m => m.role === 'user').pop()?.content || '';
+  const fullPrompt  = `${systemPrompt}\n\nUser: ${lastUserMsg}\n\nAssistant:`;
+  const encoded     = encodeURIComponent(fullPrompt);
 
-  const res = await fetch('https://api.together.xyz/v1/chat/completions', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model:       'meta-llama/Llama-3-8b-chat-hf', // Free open-source model
-      messages:    [{ role: 'system', content: systemPrompt }, { role: 'user', content: userText }],
-      max_tokens:  1500,
-      temperature: 0.7,
-    }),
-    signal: AbortSignal.timeout(25000),
+  const res = await fetch(`https://text.pollinations.ai/${encoded}`, {
+    method:  'GET',
+    headers: { Accept: 'text/plain' },
+    signal:  AbortSignal.timeout(15000),
   });
 
   if (!res.ok) return null;
-
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || null;
-}
-
-// ── PROVIDER 4: OpenRouter ────────────────────────────────────
-// Free key at: openrouter.ai — gateway to many free models
-// Add OPENROUTER_API_KEY to Vercel environment variables
-async function tryOpenRouter(userText: string, systemPrompt: string): Promise<string | null> {
-  const key = process.env.OPENROUTER_API_KEY;
-  if (!key) return null;
-
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method:  'POST',
-    headers: {
-      'Content-Type':  'application/json',
-      Authorization:   `Bearer ${key}`,
-      'HTTP-Referer':  'https://emmi.app', // Required by OpenRouter
-      'X-Title':       'EMMI Engineering Assistant',
-    },
-    body: JSON.stringify({
-      model:       'meta-llama/llama-3-8b-instruct:free', // Free model on OpenRouter
-      messages:    [{ role: 'system', content: systemPrompt }, { role: 'user', content: userText }],
-      max_tokens:  1500,
-      temperature: 0.7,
-    }),
-    signal: AbortSignal.timeout(25000),
-  });
-
-  if (!res.ok) return null;
-
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || null;
+  const text = await res.text();
+  return text.trim() || null;
 }
 
 export async function GET() {
-  return NextResponse.json({ error: 'Use POST' }, { status: 405 });
+  return NextResponse.json({ status: 'EMMI AI proxy running. Use POST.' });
 }
