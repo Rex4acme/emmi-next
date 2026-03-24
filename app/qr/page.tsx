@@ -56,14 +56,17 @@ export default function QRPage() {
   const [error,      setError]      = useState('');
   const [equipment,  setEquipment]  = useState<Equipment[]>([]);
   const [selected,   setSelected]   = useState<string>('');
+  const [tagSearch,  setTagSearch]  = useState('');
+  const [jsQR,       setJsQR]       = useState<any>(null);
   const [loading,    setLoading]    = useState(false);
 
-  // Cleanup on unmount
+  // Load jsQR dynamically
   useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-  }, [stopCamera]);
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js';
+    script.onload = () => setJsQR(() => (window as any).jsQR);
+    document.head.appendChild(script);
+  }, []);
 
   useEffect(() => {
     async function loadEquipment() {
@@ -175,6 +178,13 @@ export default function QRPage() {
       }, 100);
     }
   }, [jsQR, scanning, stopCamera]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
 
   async function handleScanned(value: string) {
     // QR value format: emmi://equipment/{tag_id} OR just the tag_id
@@ -356,7 +366,6 @@ export default function QRPage() {
                       style={{ padding: '10px 14px' }}
                       aria-label={`Select equipment ${eq.name} with tag ${eq.tag_id}`}
                     >
-                    >
                       <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                         style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
                         <QrCode size={14} style={{ color: 'var(--amber)' }}/>
@@ -368,7 +377,6 @@ export default function QRPage() {
                     </button>
                   ))
                 )}
-              </div>
               </div>
             ) : (
               <div>
