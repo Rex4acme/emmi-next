@@ -59,19 +59,43 @@ export default function QRPage() {
   async function startCamera() {
     setError('');
     setFound(null);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError('Camera API not supported on this device.');
+      return;
+    }
+    if (!window.isSecureContext) {
+      setError('Camera access requires a secure connection (HTTPS). Please access the app via HTTPS.');
+      return;
+    }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } },
-      });
+      const constraints = {
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 640 },
+          height: { ideal: 480 }
+        }
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        videoRef.current.play();
+        await videoRef.current.play();
         setScanning(true);
         scanFrame();
       }
     } catch (err: any) {
-      setError('Camera access denied. Please allow camera permission and try again.');
+      console.error('Camera error:', err);
+      if (err.name === 'NotAllowedError') {
+        setError('Camera access denied. Please allow camera permission in your browser settings and try again.');
+      } else if (err.name === 'NotFoundError') {
+        setError('No camera found on this device.');
+      } else if (err.name === 'NotSupportedError') {
+        setError('Camera not supported on this device.');
+      } else if (err.name === 'NotReadableError') {
+        setError('Camera is already in use by another application.');
+      } else {
+        setError(`Camera error: ${err.message || 'Unknown error'}`);
+      }
     }
   }
 

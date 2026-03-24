@@ -3,6 +3,7 @@
 // Built from the live version — adds Feed, Tasks, Health, Schedule,
 // Permits, Inventory, QR Scan to nav. Presence tracking included.
 
+import React from 'react';
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
