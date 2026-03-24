@@ -118,7 +118,7 @@ export default function AppShell({ children, title, action, notificationCount = 
       // Only track presence if in an org
       if (!profile?.org_id) return;
 
-      const channel = supabase.channel(`presence:${profile.org_id}`, {
+      const channel = supabase.channel(`plant:${profile.org_id}`, {
         config: { presence: { key: user.id } },
       });
 
