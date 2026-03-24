@@ -1,7 +1,7 @@
 'use client';
-// components/layout/AppShell.tsx
-// Online presence: tracks who is currently online using Supabase Realtime.
-// Bell badge in header shows count of pending colleague notifications.
+// components/layout/AppShell.tsx — Main App Shell
+// Built from the live version — adds Feed, Tasks, Health, Schedule,
+// Permits, Inventory, QR Scan to nav. Presence tracking included.
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
@@ -10,9 +10,11 @@ import { createBrowserClient } from '@/lib/supabase';
 import {
   Zap, LayoutDashboard, Cpu, AlertTriangle,
   ClipboardList, User, LogOut, Menu, X, Bell, Trophy,
-  Rss, CheckSquare, Heart, Circle, ShieldCheck, CalendarDays, QrCode, Package,
+  Rss, CheckSquare, Heart, ShieldCheck, CalendarDays,
+  QrCode, Package,
 } from 'lucide-react';
 
+// ── Sidebar nav — all pages ────────────────────────────────────
 const NAV_ITEMS = [
   { href: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard'  },
   { href: '/feed',       icon: Rss,             label: 'Feed'       },
@@ -29,6 +31,7 @@ const NAV_ITEMS = [
   { href: '/profile',    icon: User,            label: 'Profile'    },
 ];
 
+// ── Bottom nav — mobile only, max 5 most-used ─────────────────
 const BOTTOM_NAV = [
   { href: '/dashboard',  icon: LayoutDashboard, label: 'Home'    },
   { href: '/feed',       icon: Rss,             label: 'Feed'    },
@@ -37,17 +40,14 @@ const BOTTOM_NAV = [
   { href: '/profile',    icon: User,            label: 'Profile' },
 ];
 
-interface OnlineUser {
-  userId:   string;
-  name:     string;
-  avatar?:  string;
-}
+// ── Online presence ────────────────────────────────────────────
+interface OnlineUser { userId: string; name: string; avatar?: string; }
 
 interface Props {
   children:           React.ReactNode;
   title?:             string;
   action?:            React.ReactNode;
-  notificationCount?: number; // badge count passed from dashboard
+  notificationCount?: number;
 }
 
 export default function AppShell({ children, title, action, notificationCount = 0 }: Props) {
@@ -55,125 +55,88 @@ export default function AppShell({ children, title, action, notificationCount = 
   const router   = useRouter();
   const supabase = createBrowserClient();
 
-  const [sidebarOpen,    setSidebarOpen]    = useState(false);
-  const [unreadAlerts,   setUnreadAlerts]   = useState(0);
-  const [openTasks,      setOpenTasks]      = useState(0);
-  const [onlineUsers,    setOnlineUsers]    = useState<OnlineUser[]>([]);
-  const [showOnline,     setShowOnline]     = useState(false);
-  const presenceChannel  = useRef<any>(null);
-  const currentUserId    = useRef<string>('');
+  const [sidebarOpen,  setSidebarOpen]  = useState(false);
+  const [unreadAlerts, setUnreadAlerts] = useState(0);
+  const [openTasks,    setOpenTasks]    = useState(0);
+  const [onlineUsers,  setOnlineUsers]  = useState<OnlineUser[]>([]);
+  const presenceRef    = useRef<any>(null);
+  const currentUidRef  = useRef('');
 
   async function handleSignOut() {
-    // Leave presence channel before signing out
-    if (presenceChannel.current) {
-      await presenceChannel.current.untrack();
-      supabase.removeChannel(presenceChannel.current);
+    if (presenceRef.current) {
+      await presenceRef.current.untrack();
+      supabase.removeChannel(presenceRef.current);
     }
     await supabase.auth.signOut();
     router.push('/auth');
     router.refresh();
   }
 
-  // ── Unread fault alerts + task badge ──────────────────────
+  // ── Fault alerts + task badge ──────────────────────────────
   useEffect(() => {
     async function checkAlerts() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-
-      const midnight = new Date();
-      midnight.setHours(0, 0, 0, 0);
-
-      const { count: faultCount } = await supabase
-        .from('faults')
+      const midnight = new Date(); midnight.setHours(0,0,0,0);
+      const { count: fc } = await supabase.from('faults')
         .select('id', { count: 'exact', head: true })
         .eq('user_id', user.id)
-        .in('status', ['open', 'under_investigation', 'recurring'])
+        .in('status', ['open','under_investigation','recurring'])
         .lt('detected_at', midnight.toISOString())
         .eq('reminder_sent', false);
+      setUnreadAlerts(fc || 0);
 
-      setUnreadAlerts(faultCount || 0);
-
-      const { count: taskCount } = await supabase
-        .from('tasks')
+      const { count: tc } = await supabase.from('tasks')
         .select('id', { count: 'exact', head: true })
         .eq('assigned_to', user.id)
-        .in('status', ['open', 'in_progress']);
-
-      setOpenTasks(taskCount || 0);
+        .in('status', ['open','in_progress']);
+      setOpenTasks(tc || 0);
     }
     checkAlerts();
   }, [pathname]);
 
-  // ── Supabase Realtime Presence — who is online ───────────
-  // This tracks every engineer currently using the app in real time.
+  // ── Presence — unified channel plant:{orgId} ──────────────
   useEffect(() => {
-    async function setupPresence() {
+    async function setup() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-      currentUserId.current = user.id;
-
-      // Get this user's profile for their display name
+      currentUidRef.current = user.id;
       const { data: profile } = await supabase
-        .from('profiles')
-        .select('full_name, avatar_url, org_id')
-        .eq('id', user.id)
-        .single();
-
-      // Only track presence if in an org
+        .from('profiles').select('full_name,avatar_url,org_id').eq('id', user.id).single();
       if (!profile?.org_id) return;
 
-      const channel = supabase.channel(`plant:${profile.org_id}`, {
+      const ch = supabase.channel(`plant:${profile.org_id}`, {
         config: { presence: { key: user.id } },
       });
-
-      channel
-        .on('presence', { event: 'sync' }, () => {
-          const state = channel.presenceState<{ name: string; avatar?: string }>();
-          const users: OnlineUser[] = Object.entries(state).map(([uid, presences]) => ({
-            userId: uid,
-            name:   (presences as any[])[0]?.name   || 'Engineer',
-            avatar: (presences as any[])[0]?.avatar  || undefined,
-          }));
-          setOnlineUsers(users);
-        })
-        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
-          // Handled by sync
-        })
-        .on('presence', { event: 'leave' }, ({ key }) => {
-          setOnlineUsers(prev => prev.filter(u => u.userId !== key));
-        })
-        .subscribe(async (status) => {
-          if (status === 'SUBSCRIBED') {
-            await channel.track({
-              name:   profile?.full_name || 'Engineer',
-              avatar: profile?.avatar_url || null,
-            });
-          }
+      ch.on('presence', { event: 'sync' }, () => {
+        const state = ch.presenceState<{ name: string; avatar?: string }>();
+        setOnlineUsers(Object.entries(state).map(([uid, arr]) => ({
+          userId: uid, name: (arr as any[])[0]?.name || 'Engineer', avatar: (arr as any[])[0]?.avatar,
+        })));
+      })
+      .on('presence', { event: 'leave' }, ({ key }) => {
+        setOnlineUsers(p => p.filter(u => u.userId !== key));
+      })
+      .subscribe(async s => {
+        if (s === 'SUBSCRIBED') await ch.track({
+          name: profile.full_name || 'Engineer', avatar: profile.avatar_url || null,
         });
-
-      presenceChannel.current = channel;
+      });
+      presenceRef.current = ch;
     }
-
-    setupPresence();
-
+    setup();
     return () => {
-      if (presenceChannel.current) {
-        presenceChannel.current.untrack();
-        supabase.removeChannel(presenceChannel.current);
-      }
+      if (presenceRef.current) { presenceRef.current.untrack(); supabase.removeChannel(presenceRef.current); }
     };
-  }, []); // only once on mount
+  }, []);
 
   function isActive(href: string) {
     if (href === '/dashboard') return pathname === '/dashboard';
     return pathname.startsWith(href);
   }
 
-  // Total bell badge = unread fault alerts + incoming notifications from dashboard
   const bellCount = unreadAlerts + notificationCount;
-
-  // Online users excluding self
-  const othersOnline = onlineUsers.filter(u => u.userId !== currentUserId.current);
+  const othersOnline = onlineUsers.filter(u => u.userId !== currentUidRef.current);
 
   return (
     <div className="flex h-dvh bg-surface overflow-hidden">
@@ -194,32 +157,28 @@ export default function AppShell({ children, title, action, notificationCount = 
           <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
             <div className="flex items-center gap-1.5 mb-1.5">
               <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--green)' }}/>
-              <span className="text-xs font-bold" style={{ color: 'var(--green)', fontSize: 9, letterSpacing: '0.06em' }}>
+              <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--green)', letterSpacing: '0.06em' }}>
                 {onlineUsers.length} ONLINE
               </span>
             </div>
             <div className="flex flex-col gap-1">
               {onlineUsers.slice(0, 5).map(u => (
                 <div key={u.userId} className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: 'var(--green)' }}/>
-                  <span className="text-xs truncate" style={{
-                    color: u.userId === currentUserId.current ? 'var(--amber)' : 'var(--text-2)',
-                    fontSize: 11,
-                  }}>
-                    {u.userId === currentUserId.current ? 'You' : u.name}
+                  <div className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                    style={{ background: u.userId === currentUidRef.current ? 'var(--amber)' : 'var(--green)' }}/>
+                  <span style={{ fontSize: 11, color: u.userId === currentUidRef.current ? 'var(--amber)' : 'var(--text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {u.userId === currentUidRef.current ? 'You' : u.name}
                   </span>
                 </div>
               ))}
               {onlineUsers.length > 5 && (
-                <span className="text-xs" style={{ color: 'var(--text-3)', fontSize: 10 }}>
-                  +{onlineUsers.length - 5} more
-                </span>
+                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>+{onlineUsers.length - 5} more</span>
               )}
             </div>
           </div>
         )}
 
-        {/* Nav */}
+        {/* Nav links */}
         <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
           {NAV_ITEMS.map(({ href, icon: Icon, label }) => (
             <Link key={href} href={href}
@@ -233,15 +192,11 @@ export default function AppShell({ children, title, action, notificationCount = 
               {label}
               {href === '/faults' && unreadAlerts > 0 && (
                 <span className="ml-auto text-xs px-1.5 py-0.5 rounded-full font-bold"
-                  style={{ background: 'var(--red)', color: '#fff' }}>
-                  {unreadAlerts}
-                </span>
+                  style={{ background: 'var(--red)', color: '#fff' }}>{unreadAlerts}</span>
               )}
               {href === '/tasks' && openTasks > 0 && (
                 <span className="ml-auto text-xs px-1.5 py-0.5 rounded-full font-bold"
-                  style={{ background: 'var(--blue)', color: '#fff' }}>
-                  {openTasks}
-                </span>
+                  style={{ background: 'var(--blue)', color: '#fff' }}>{openTasks}</span>
               )}
             </Link>
           ))}
@@ -249,7 +204,7 @@ export default function AppShell({ children, title, action, notificationCount = 
 
         <div className="p-3" style={{ borderTop: '1px solid var(--border)' }}>
           <button onClick={handleSignOut}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all"
             style={{ color: 'var(--text-2)' }}>
             <LogOut size={16}/> Sign Out
           </button>
@@ -268,28 +223,24 @@ export default function AppShell({ children, title, action, notificationCount = 
                 <Zap size={20} style={{ color: 'var(--amber)' }}/>
                 <span className="font-bold font-display" style={{ color: 'var(--amber)' }}>EMMI</span>
               </div>
-              <button onClick={() => setSidebarOpen(false)} style={{ color: 'var(--text-2)' }}>
-                <X size={20}/>
-              </button>
+              <button onClick={() => setSidebarOpen(false)} style={{ color: 'var(--text-2)' }}><X size={20}/></button>
             </div>
 
-            {/* Online strip in mobile drawer */}
+            {/* Online strip in drawer */}
             {onlineUsers.length > 0 && (
               <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--border)' }}>
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--green)' }}/>
                   <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--green)', letterSpacing: '0.06em' }}>
-                    {onlineUsers.length} ONLINE NOW
+                    {onlineUsers.length} ONLINE
                   </span>
                 </div>
                 <div className="flex flex-col gap-1">
-                  {onlineUsers.slice(0, 6).map(u => (
+                  {onlineUsers.slice(0, 5).map(u => (
                     <div key={u.userId} className="flex items-center gap-2">
-                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--green)', flexShrink: 0 }}/>
-                      <span style={{
-                        fontSize: 12, color: u.userId === currentUserId.current ? 'var(--amber)' : 'var(--text-2)',
-                      }}>
-                        {u.userId === currentUserId.current ? 'You' : u.name}
+                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: u.userId === currentUidRef.current ? 'var(--amber)' : 'var(--green)', flexShrink: 0 }}/>
+                      <span style={{ fontSize: 12, color: u.userId === currentUidRef.current ? 'var(--amber)' : 'var(--text-2)' }}>
+                        {u.userId === currentUidRef.current ? 'You' : u.name}
                       </span>
                     </div>
                   ))}
@@ -308,9 +259,7 @@ export default function AppShell({ children, title, action, notificationCount = 
                   <Icon size={18}/> {label}
                   {href === '/tasks' && openTasks > 0 && (
                     <span className="ml-auto text-xs px-1.5 py-0.5 rounded-full font-bold"
-                      style={{ background: 'var(--blue)', color: '#fff' }}>
-                      {openTasks}
-                    </span>
+                      style={{ background: 'var(--blue)', color: '#fff' }}>{openTasks}</span>
                   )}
                 </Link>
               ))}
@@ -328,9 +277,9 @@ export default function AppShell({ children, title, action, notificationCount = 
 
       {/* ── Main content ─────────────────────────────────────── */}
       <div className="flex flex-col flex-1 overflow-hidden">
-
         <header className="flex items-center justify-between px-4 py-3 flex-shrink-0 md:px-8"
           style={{ borderBottom: '1px solid var(--border)', background: 'var(--base)' }}>
+
           <button className="md:hidden p-1.5 rounded-lg" onClick={() => setSidebarOpen(true)}
             style={{ color: 'var(--text-2)' }}>
             <Menu size={22}/>
@@ -341,22 +290,15 @@ export default function AppShell({ children, title, action, notificationCount = 
           </h1>
 
           <div className="flex items-center gap-2">
-
-            {/* Online presence pill — mobile header */}
+            {/* Online pill on mobile */}
             {othersOnline.length > 0 && (
-              <button
-                onClick={() => setShowOnline(v => !v)}
-                className="md:hidden flex items-center gap-1.5 px-2 py-1 rounded-full"
-                style={{ background: 'rgba(52,208,88,0.1)', border: '1px solid rgba(52,208,88,0.2)' }}
-              >
+              <div className="md:hidden flex items-center gap-1 px-2 py-1 rounded-full"
+                style={{ background: 'rgba(52,208,88,0.1)', border: '1px solid rgba(52,208,88,0.2)' }}>
                 <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--green)' }}/>
-                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--green)' }}>
-                  {othersOnline.length}
-                </span>
-              </button>
+                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--green)' }}>{othersOnline.length}</span>
+              </div>
             )}
-
-            {/* Bell — shows fault alerts + incoming toasts */}
+            {/* Bell */}
             {bellCount > 0 && (
               <Link href="/faults" className="relative p-1.5" style={{ color: 'var(--text-2)' }}>
                 <Bell size={20}/>
@@ -366,26 +308,9 @@ export default function AppShell({ children, title, action, notificationCount = 
                 </span>
               </Link>
             )}
-
             {action}
           </div>
         </header>
-
-        {/* Mobile online dropdown */}
-        {showOnline && othersOnline.length > 0 && (
-          <div className="md:hidden absolute top-14 right-4 z-40 rounded-xl shadow-xl"
-            style={{ background: 'var(--card)', border: '1px solid var(--border)', minWidth: 180, padding: '12px 14px' }}>
-            <p style={{ fontSize: 9, fontWeight: 700, color: 'var(--green)', letterSpacing: '0.06em', marginBottom: 8 }}>
-              ONLINE NOW
-            </p>
-            {othersOnline.map(u => (
-              <div key={u.userId} className="flex items-center gap-2 mb-2">
-                <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 animate-pulse" style={{ background: 'var(--green)' }}/>
-                <span style={{ fontSize: 12, color: 'var(--text-2)' }}>{u.name}</span>
-              </div>
-            ))}
-          </div>
-        )}
 
         <main className="flex-1 overflow-y-auto">
           <div className="p-4 pb-24 md:pb-6 page-enter max-w-4xl mx-auto w-full">
@@ -394,7 +319,7 @@ export default function AppShell({ children, title, action, notificationCount = 
         </main>
       </div>
 
-      {/* ── Bottom nav (mobile) ──────────────────────────────── */}
+      {/* ── Bottom nav (mobile) — 5 key items ───────────────── */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex pb-safe"
         style={{ background: 'var(--base)', borderTop: '1px solid var(--border)' }}>
         {BOTTOM_NAV.map(({ href, icon: Icon, label }) => (
@@ -404,21 +329,19 @@ export default function AppShell({ children, title, action, notificationCount = 
             <Icon size={20} strokeWidth={isActive(href) ? 2.5 : 1.8}/>
             <span className="text-[10px]">{label}</span>
             {href === '/faults' && unreadAlerts > 0 && (
-              <span className="absolute top-1.5 right-1/4 w-2 h-2 rounded-full"
-                style={{ background: 'var(--red)' }}/>
+              <span className="absolute top-1.5 right-1/4 w-2 h-2 rounded-full" style={{ background: 'var(--red)' }}/>
             )}
             {href === '/tasks' && openTasks > 0 && (
-              <span className="absolute top-1.5 right-1/4 w-2 h-2 rounded-full"
-                style={{ background: 'var(--blue)' }}/>
+              <span className="absolute top-1.5 right-1/4 w-2 h-2 rounded-full" style={{ background: 'var(--blue)' }}/>
             )}
             {href === '/feed' && notificationCount > 0 && (
-              <span className="absolute top-1.5 right-1/4 w-2 h-2 rounded-full"
-                style={{ background: 'var(--amber)' }}/>
+              <span className="absolute top-1.5 right-1/4 w-2 h-2 rounded-full" style={{ background: 'var(--amber)' }}/>
             )}
           </Link>
         ))}
       </nav>
 
+      {/* EMMI pulse indicator */}
       <div className="emmi-pulse-indicator" title="EMMI Active">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
