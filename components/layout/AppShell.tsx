@@ -10,18 +10,22 @@ import { createBrowserClient } from '@/lib/supabase';
 import {
   Zap, LayoutDashboard, Cpu, AlertTriangle,
   ClipboardList, User, LogOut, Menu, X, Bell, Trophy,
-  Rss, CheckSquare, Heart, Circle,
+  Rss, CheckSquare, Heart, Circle, ShieldCheck, CalendarDays, QrCode, Package,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { href: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard'  },
-  { href: '/feed',       icon: Rss,             label: 'Feed'        },
+  { href: '/feed',       icon: Rss,             label: 'Feed'       },
   { href: '/equipment',  icon: Cpu,             label: 'Equipment'  },
   { href: '/faults',     icon: AlertTriangle,   label: 'Faults'     },
   { href: '/activities', icon: ClipboardList,   label: 'Activities' },
+  { href: '/schedule',   icon: CalendarDays,    label: 'Schedule'   },
+  { href: '/permit',     icon: ShieldCheck,     label: 'Permits'    },
   { href: '/tasks',      icon: CheckSquare,     label: 'Tasks'      },
+  { href: '/inventory',  icon: Package,         label: 'Inventory'  },
   { href: '/health',     icon: Heart,           label: 'Health'     },
   { href: '/kpi',        icon: Trophy,          label: 'KPI'        },
+  { href: '/qr',         icon: QrCode,          label: 'QR Scan'    },
   { href: '/profile',    icon: User,            label: 'Profile'    },
 ];
 
