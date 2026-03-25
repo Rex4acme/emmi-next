@@ -94,97 +94,51 @@ export default function QRPage() {
   const startCamera = useCallback(async () => {
     setError('');
     setFound(null);
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setError('Camera API not supported on this device.');
-      return;
+    if (cameraRef.current) {
+      cameraRef.current.click();
     }
-    if (!window.isSecureContext) {
-      setError('Camera access requires a secure connection (HTTPS). Please access the app via HTTPS.');
-      return;
-    }
+  }, []);
+
+  const handlePhotoCapture = useCallback(async (files: FileList | null) => {
+    if (!files || !files[0] || !jsQR) return;
+    const file = files[0];
+    if (!file.type.startsWith('image/')) return;
+
+    setScanning(true);
+    setError('');
+
     try {
-      const constraints = {
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 640 },
-          height: { ideal: 480 }
+      const img = new Image();
+      img.onload = () => {
+        if (!canvasRef.current) return;
+        const canvas = canvasRef.current;
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d')!;
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height, {
+          inversionAttempts: 'dontInvert'
+        });
+
+        if (code?.data) {
+          // Vibrate on success if supported
+          if ('vibrate' in navigator) {
+            navigator.vibrate(200);
+          }
+          handleScanned(code.data);
+        } else {
+          setError('No QR code found in the image. Please try again.');
         }
+        setScanning(false);
       };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-        setScanning(true);
-        scanFrame();
-      }
-    } catch (err: any) {
-      console.error('Camera error:', err);
-      if (err.name === 'NotAllowedError') {
-        setError('Camera access denied. Please allow camera permission in your browser settings and try again.');
-      } else if (err.name === 'NotFoundError') {
-        setError('No camera found on this device.');
-      } else if (err.name === 'NotSupportedError') {
-        setError('Camera not supported on this device.');
-      } else if (err.name === 'NotReadableError') {
-        setError('Camera is already in use by another application.');
-      } else {
-        setError(`Camera error: ${err.message || 'Unknown error'}`);
-      }
+      img.src = URL.createObjectURL(file);
+    } catch (err) {
+      console.error('Error processing image:', err);
+      setError('Failed to process the image.');
+      setScanning(false);
     }
-  }, []);
-
-  const stopCamera = useCallback(() => {
-    cancelAnimationFrame(rafRef.current);
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(t => t.stop());
-      streamRef.current = null;
-    }
-    setScanning(false);
-  }, []);
-
-  const scanFrame = useCallback(() => {
-    if (!videoRef.current || !canvasRef.current || !jsQR || !scanning) {
-      return;
-    }
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (video.readyState !== video.HAVE_ENOUGH_DATA) {
-      rafRef.current = requestAnimationFrame(scanFrame);
-      return;
-    }
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const code = jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts: 'dontInvert'
-    });
-
-    if (code?.data) {
-      // Vibrate on success if supported
-      if ('vibrate' in navigator) {
-        navigator.vibrate(200);
-      }
-      stopCamera();
-      handleScanned(code.data);
-    } else {
-      // Throttle scanning to ~10fps to reduce CPU usage
-      setTimeout(() => {
-        if (scanning) {
-          rafRef.current = requestAnimationFrame(scanFrame);
-        }
-      }, 100);
-    }
-  }, [jsQR, scanning, stopCamera]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      stopCamera();
-    };
-  }, [stopCamera]);
+  }, [jsQR]);
 
   async function handleScanned(value: string) {
     // QR value format: emmi://equipment/{tag_id} OR just the tag_id
@@ -234,51 +188,28 @@ export default function QRPage() {
             {!scanning && !found && (
               <div className="card text-center py-10 mb-4">
                 <Scan size={48} style={{ color: 'var(--amber)', margin: '0 auto 12px', opacity: 0.6 }}/>
-                <p className="text-sm font-semibold mb-2" style={{ color: 'var(--text)' }}>Scan Equipment QR Code</p>
+                <p className="text-sm font-semibold mb-2" style={{ color: 'var(--text)' }}>Take Photo of Equipment QR Code</p>
                 <p className="text-xs mb-5" style={{ color: 'var(--text-2)' }}>
-                  Point your camera at a QR code on any EMMI-tagged equipment to instantly open its profile.
+                  Take a photo of a QR code on any EMMI-tagged equipment to instantly open its profile.
                 </p>
                 <button onClick={startCamera}
                   className="flex items-center gap-2 px-5 py-3 rounded-xl text-sm font-bold mx-auto"
                   style={{ background: 'var(--amber)', color: '#000' }}>
-                  <Camera size={16}/> Open Camera
+                  <Camera size={16}/> Take Photo
                 </button>
               </div>
             )}
 
             {/* Camera view */}
             {scanning && (
-              <div className="card mb-4" style={{ overflow: 'hidden', padding: 0 }}>
-                <div style={{ position: 'relative', background: '#000' }}>
-                  <video ref={videoRef} playsInline muted
-                    style={{ width: '100%', display: 'block', maxHeight: 320, objectFit: 'cover' }}/>
-                  {/* Scan frame overlay */}
-                  <div style={{
-                    position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    pointerEvents: 'none',
-                  }}>
-                    <div style={{
-                      width: 200, height: 200, border: '2px solid var(--amber)',
-                      borderRadius: 12, boxShadow: '0 0 0 1000px rgba(0,0,0,0.4)',
-                    }}>
-                      <div style={{ position: 'absolute', top: 0, left: 0, width: 20, height: 20, borderTop: '3px solid var(--amber)', borderLeft: '3px solid var(--amber)', borderRadius: '12px 0 0 0' }}/>
-                      <div style={{ position: 'absolute', top: 0, right: 0, width: 20, height: 20, borderTop: '3px solid var(--amber)', borderRight: '3px solid var(--amber)', borderRadius: '0 12px 0 0' }}/>
-                      <div style={{ position: 'absolute', bottom: 0, left: 0, width: 20, height: 20, borderBottom: '3px solid var(--amber)', borderLeft: '3px solid var(--amber)', borderRadius: '0 0 0 12px' }}/>
-                      <div style={{ position: 'absolute', bottom: 0, right: 0, width: 20, height: 20, borderBottom: '3px solid var(--amber)', borderRight: '3px solid var(--amber)', borderRadius: '0 0 12px 0' }}/>
-                    </div>
-                  </div>
-                  <canvas ref={canvasRef} style={{ display: 'none' }}/>
-                </div>
-                <div className="flex items-center justify-between px-4 py-3">
-                  <p className="text-xs animate-pulse" style={{ color: 'var(--amber)' }}>Scanning…</p>
-                  <button onClick={stopCamera}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs"
-                    style={{ background: 'var(--surface)', border: '1px solid var(--border)', color: 'var(--text-2)' }}>
-                    <X size={12}/> Cancel
-                  </button>
-                </div>
+              <div className="card mb-4 text-center py-10">
+                <Loader2 size={24} className="animate-spin mx-auto mb-2" style={{ color: 'var(--amber)' }}/>
+                <p className="text-sm" style={{ color: 'var(--text)' }}>Processing image...</p>
               </div>
             )}
+
+            <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={e => handlePhotoCapture(e.target.files)} className="hidden"/>
+            <canvas ref={canvasRef} style={{ display: 'none' }}/>
 
             {/* Found equipment */}
             {found && (
@@ -312,7 +243,7 @@ export default function QRPage() {
                 <button onClick={() => { setFound(null); startCamera(); }}
                   className="w-full mt-2 py-2 text-xs"
                   style={{ color: 'var(--text-3)' }}>
-                  Scan another →
+                  Take another photo →
                 </button>
               </div>
             )}
