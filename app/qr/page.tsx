@@ -45,10 +45,8 @@ function QRImage({ value, size = 200 }: { value: string; size?: number }) {
 export default function QRPage() {
   const router   = useRouter();
   const supabase = createBrowserClient();
-  const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const rafRef    = useRef<number>(0);
+  const cameraRef = useRef<HTMLInputElement>(null);
 
   const [mode,       setMode]       = useState<'scan' | 'generate'>('scan');
   const [scanning,   setScanning]   = useState(false);
