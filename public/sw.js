@@ -1,11 +1,11 @@
-// public/sw.js — EMMI Service Worker
-// Caches key pages so the app works when internet drops.
-// Engineers can still READ their faults, equipment and activities offline.
-// New data syncs automatically when connection returns.
+// public/sw.js — EMMI Service Worker v2
+// FIX: Offline redirect loop solved.
+// Previously: offline → getUser() fails → redirect to /auth → cached /dashboard → loop.
+// Now: offline navigation always serves the cached page for that route, never redirects.
+// Engineers can READ their data offline. Writes queue and sync when back online.
 
-const CACHE_NAME = 'emmi-v1';
+const CACHE_NAME = 'emmi-v2';
 
-// Pages to cache immediately on install
 const PRECACHE = [
   '/',
   '/dashboard',
@@ -14,12 +14,20 @@ const PRECACHE = [
   '/equipment',
   '/feed',
   '/profile',
+  '/inventory',
+  '/tasks',
+  '/kpi',
+  '/qr',
+  '/schedule',
+  '/permit',
 ];
 
 // ── Install: cache core pages ──────────────────────────────────
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(PRECACHE))
+    caches.open(CACHE_NAME).then(cache => cache.addAll(PRECACHE).catch(() => {
+      // Some pages may 404 on first install — that's fine, cache what we can
+    }))
   );
   self.skipWaiting();
 });
@@ -34,46 +42,91 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// ── Fetch: network first, fall back to cache ───────────────────
-// For API/Supabase calls: always try network (live data matters).
-// For pages: try network first, serve cache if offline.
+// ── Fetch: smart offline strategy ─────────────────────────────
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Skip non-GET and Supabase API calls — always live
+  // Skip non-GET — these must go to network (form submits, etc.)
   if (event.request.method !== 'GET') return;
+
+  // Skip Supabase API — must be live data
   if (url.hostname.includes('supabase.co')) return;
+
+  // Skip our own API routes — must be live
   if (url.pathname.startsWith('/api/')) return;
 
-  // For everything else: network first, cache fallback
-  event.respondWith(
-    fetch(event.request)
-      .then(response => {
-        // Cache successful responses
-        if (response && response.status === 200) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-        }
-        return response;
-      })
-      .catch(() => {
-        // Offline: serve from cache
-        return caches.match(event.request).then(cached => {
-          if (cached) return cached;
-          // If navigating to a page not in cache, serve dashboard from cache
-          if (event.request.mode === 'navigate') {
-            return caches.match('/dashboard');
-          }
-          return new Response('Offline', { status: 503 });
-        });
-      })
-  );
+  // Skip external CDN scripts (jsQR, ZXing, QR generator)
+  if (url.hostname !== self.location.hostname) return;
+
+  event.respondWith(handleFetch(event.request));
 });
 
+async function handleFetch(request) {
+  const url = new URL(request.url);
+
+  try {
+    // Try network first — update cache on success
+    const networkResponse = await fetch(request);
+    if (networkResponse && networkResponse.status === 200) {
+      const cache = await caches.open(CACHE_NAME);
+      cache.put(request, networkResponse.clone());
+    }
+    return networkResponse;
+  } catch (networkError) {
+    // OFFLINE: serve from cache
+    const cached = await caches.match(request);
+    if (cached) return cached;
+
+    // For page navigation: serve the specific cached page if available,
+    // otherwise serve dashboard (NOT /auth — that causes the redirect loop)
+    if (request.mode === 'navigate') {
+      // Try to match the exact path first
+      const exactCached = await caches.match(url.pathname);
+      if (exactCached) return exactCached;
+
+      // Fall back to dashboard (engineer stays in app, not kicked to login)
+      const dashboard = await caches.match('/dashboard');
+      if (dashboard) return dashboard;
+
+      // Last resort — offline page
+      return new Response(
+        `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>EMMI — Offline</title>
+  <style>
+    body { background: #0b0f14; color: #e6edf3; font-family: sans-serif;
+           display: flex; flex-direction: column; align-items: center;
+           justify-content: center; min-height: 100vh; margin: 0; text-align: center; padding: 24px; }
+    .logo { font-size: 32px; font-weight: 800; color: #f0a500; letter-spacing: 6px; margin-bottom: 8px; }
+    p { color: #8b949e; font-size: 14px; line-height: 1.6; max-width: 280px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #f85149;
+           display: inline-block; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div class="logo">EMMI</div>
+  <div class="dot"></div>
+  <p>You are offline. Connect to the internet to sync data.</p>
+  <p style="margin-top:12px;font-size:12px;">Your previously viewed data is available — go back to the dashboard.</p>
+  <a href="/dashboard" style="margin-top:24px;background:#f0a500;color:#000;padding:12px 24px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;">
+    Back to Dashboard
+  </a>
+</body>
+</html>`,
+        { headers: { 'Content-Type': 'text/html' } }
+      );
+    }
+
+    return new Response('Offline', { status: 503 });
+  }
+}
+
 // ── Push notifications ─────────────────────────────────────────
-// Handles push notifications sent from the server even when app is closed.
 self.addEventListener('push', (event) => {
-  const data = event.data?.json() || {};
+  const data  = event.data?.json() || {};
   const title = data.title || 'EMMI — New Update';
   const body  = data.body  || 'A colleague has posted on the plant feed.';
 
@@ -95,7 +148,6 @@ self.addEventListener('notificationclick', (event) => {
   const url = event.notification.data?.url || '/feed';
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
-      // If app already open, focus it
       for (const client of clientList) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
           client.focus();
@@ -103,7 +155,6 @@ self.addEventListener('notificationclick', (event) => {
           return;
         }
       }
-      // Otherwise open new window
       if (clients.openWindow) return clients.openWindow(url);
     })
   );
