@@ -57,23 +57,23 @@ export default function NewPermitPage() {
       setUserId(user.id);
 
       const { data: profile } = await supabase
-        .from('profiles').select('full_name, org_id').eq('id', user.id).single();
+        .from('profiles').select('full_name, org_id, role').eq('id', user.id).single();
       setOrgId(profile?.org_id || '');
       setMyName(profile?.full_name || '');
 
-      // Load equipment for dropdown
       const { data: eq } = await supabase
         .from('equipment').select('id, tag_id, name').eq('user_id', user.id).order('tag_id');
       setEquipment(eq || []);
 
-      // Load org members for approver dropdown
+      // FIX: include self in approver list if they are senior_engineer or admin
+      // Previously excluded self always — so senior engineers could not approve their own PTW
       if (profile?.org_id) {
-        const { data: members } = await supabase
-          .from('profiles')
-          .select('id, full_name, role')
-          .eq('org_id', profile.org_id)
-          .in('role', ['senior_engineer', 'admin'])
-          .neq('id', user.id);
+        const myRole = profile?.role || 'engineer';
+        const isSeniorOrAdmin = ['senior_engineer','admin'].includes(myRole);
+        let q = supabase.from('profiles').select('id, full_name, role')
+          .eq('org_id', profile.org_id).in('role', ['senior_engineer','admin']);
+        if (!isSeniorOrAdmin) q = q.neq('id', user.id);
+        const { data: members } = await q;
         setOrgMembers(members || []);
       }
     }
@@ -258,7 +258,7 @@ export default function NewPermitPage() {
               </div>
             ) : (
               <p className="text-xs" style={{ color: 'var(--text-2)' }}>
-                No Senior Engineers or Admins in your plant yet. Permit will be self-approved.
+                No other Senior Engineers or Admins found. If you are a Senior Engineer or Admin, check your role is set correctly in your Profile page.
               </p>
             )}
           </div>
