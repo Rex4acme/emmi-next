@@ -553,7 +553,7 @@ export default function ScannerPage() {
                 <div>
                   <p className="text-sm font-bold mb-1" style={{ color: '#fff' }}>Nameplate Reader — Offline OCR</p>
                   <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>
-                    Takes a photo of the equipment nameplate and reads all specs using on-device OCR — works without internet, no API key needed.
+                    Takes a photo of the equipment nameplate and reads all specs using on-device OCR.
                   </p>
                   <p className="text-xs mt-1.5 font-semibold" style={{ color: 'var(--green)' }}>
                     ✓ 100% offline — no internet required after first load
