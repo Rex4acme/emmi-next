@@ -64,19 +64,18 @@ export default function ScannerPage() {
   const [saving,        setSaving]        = useState(false);
   const [saveOk,        setSaveOk]        = useState(false);
 
-  // ── Load jsQR only (no ZXing — it crashes Next.js) ─────────
-  // For barcodes we use Quagga2 which is Next.js compatible
+  // ── Load scanning + OCR libraries ──────────────────────────
   useEffect(() => {
     const loadScript = (src: string, id: string) => {
       if (document.getElementById(id)) return;
       const s = document.createElement('script');
-      s.id  = id; s.src = src; s.async = true;
+      s.id = id; s.src = src; s.async = true;
       document.head.appendChild(s);
     };
-    // jsQR for QR codes
     loadScript('https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js', 'jsqr-lib');
-    // Quagga2 for barcodes (EAN-13, Code128, Code39, UPC, ITF) — Next.js compatible
     loadScript('https://cdn.jsdelivr.net/npm/@ericblade/quagga2/dist/quagga.min.js', 'quagga-lib');
+    // Tesseract.js — offline OCR, runs in browser, no internet needed after first load
+    loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js', 'tesseract-lib');
     return () => stopCamera();
   }, []);
 
@@ -216,23 +215,113 @@ export default function ScannerPage() {
     reader.onload = async (e) => {
       const dataUrl = e.target?.result as string;
       setCapturedImg(dataUrl);
-      await analyseNameplate(dataUrl.split(',')[1], file.type || 'image/jpeg');
+      await runOCR(dataUrl);
     };
     reader.readAsDataURL(file);
   }
 
-  async function analyseNameplate(base64: string, mime: string) {
+  // ── Tesseract.js OCR — runs 100% in browser, NO internet needed ──
+  // Reads all text from nameplate image then parses known electrical fields
+  async function runOCR(dataUrl: string) {
     setAnalysing(true); setNameplateErr('');
     try {
-      const res  = await fetch('/api/nameplate', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body:   JSON.stringify({ imageBase64: base64, mimeType: mime }),
+      const Tesseract = (window as any).Tesseract;
+      if (!Tesseract) {
+        setNameplateErr('OCR library still loading. Please wait a moment and try again.');
+        setAnalysing(false); return;
+      }
+
+      // Run OCR — Tesseract downloads its language model (~8MB) on first use only
+      const { data: { text } } = await Tesseract.recognize(dataUrl, 'eng', {
+        logger: () => {}, // suppress console logs
       });
-      const data = await res.json();
-      if (!res.ok || data.error) setNameplateErr(data.error || 'Failed to read nameplate.');
-      else setNameplateData(data.specs);
-    } catch { setNameplateErr('Network error. Check your internet connection and try again.'); }
-    finally  { setAnalysing(false); }
+
+      if (!text || text.trim().length < 10) {
+        setNameplateErr('Could not read text from image. Try better lighting, hold steady, and get closer to the nameplate.');
+        setAnalysing(false); return;
+      }
+
+      // Parse the raw OCR text into structured equipment fields
+      const parsed = parseNameplateText(text);
+      parsed.raw_text = text.trim();
+      setNameplateData(parsed);
+
+    } catch (err: any) {
+      setNameplateErr('OCR failed: ' + (err.message || 'Unknown error'));
+    } finally {
+      setAnalysing(false);
+    }
+  }
+
+  // ── Smart field parser — extracts electrical specs from raw OCR text ──
+  // Handles common nameplate formats: ABB, Siemens, WEG, Leroy-Somer, etc.
+  function parseNameplateText(text: string): Record<string, any> {
+    const t = text.toUpperCase();
+    const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+
+    const find = (patterns: RegExp[]): string | null => {
+      for (const p of patterns) {
+        const m = t.match(p);
+        if (m?.[1]) return m[1].trim().replace(/[^\w\s\.\-\/]/g, '').trim();
+      }
+      return null;
+    };
+
+    // Equipment type — usually on the first 1-3 lines
+    const typeKeywords: Record<string, string> = {
+      'INDUCTION MOTOR': 'Induction Motor', 'SQUIRREL CAGE': 'Squirrel Cage Motor',
+      'TRANSFORMER': 'Transformer', 'CIRCUIT BREAKER': 'Circuit Breaker',
+      'MOTOR': 'Electric Motor', 'GENERATOR': 'Generator', 'PUMP': 'Pump',
+      'COMPRESSOR': 'Compressor', 'VFD': 'Variable Frequency Drive',
+      'SWITCHGEAR': 'Switchgear', 'CONTACTOR': 'Contactor', 'RELAY': 'Relay',
+    };
+    let equipmentName = null;
+    for (const [kw, label] of Object.entries(typeKeywords)) {
+      if (t.includes(kw)) { equipmentName = label; break; }
+    }
+
+    return {
+      equipment_name:    equipmentName || (lines[0]?.length < 40 ? lines[0] : 'Equipment'),
+      manufacturer:      find([/(?:MFR|MANUFACTURER|BRAND|MADE BY)[:\s]+([A-Z\s]+)(?:\n|\d)/,
+                               /^([A-Z]{2,}(?:\s[A-Z]+)?)\s+(?:LTD|INC|CORP|GMBH|S\.A)/m]) ||
+                         guessManufacturer(t),
+      model:             find([/(?:MODEL|TYPE|FRAME)[:\s]+([\w\-\/]+)/,
+                               /(?:MOD\.|TYP\.)[:\s]+([\w\-\/]+)/]),
+      serial_number:     find([/(?:S\.?N\.?|SER(?:IAL)?(?:\s+NO\.?)?)[:\s]+([\w\-]+)/,
+                               /(?:SERIAL|S\/N)[:\s]+([\w\-]+)/]),
+      voltage_rating:    find([/(\d+(?:\.\d+)?\s*(?:KV|V))(?:\s*\/\s*\d+(?:\.\d+)?\s*(?:KV|V))?/,
+                               /(?:VOLT|VOLTAGE|VOLTS|RATED\s+V)[:\s]+(\d[\d\/\s]*V)/]),
+      current_rating:    find([/(\d+(?:\.\d+)?\s*A(?:MPS?)?)(?:\s*\/\s*\d+(?:\.\d+)?\s*A)?/,
+                               /(?:CURRENT|AMPS|AMP)[:\s]+(\d+(?:\.\d+)?)/]),
+      power_rating:      find([/(\d+(?:\.\d+)?\s*(?:KW|MW|HP|KVA|VA))(?!\s*(?:HZ|V|A))/,
+                               /(?:POWER|RATED\s+(?:KW|HP))[:\s]+(\d+(?:\.\d+)?\s*(?:KW|HP|KVA))/]),
+      frequency:         find([/(\d+\s*HZ)/,
+                               /(?:FREQ(?:UENCY)?)[:\s]+(\d+\s*HZ)/]),
+      speed_rpm:         find([/(\d+\s*(?:R\.?P\.?M|RPM))/,
+                               /(?:SPEED|RPM|N|NS)[:\s]+(\d+)/]),
+      power_factor:      find([/(?:P\.?F\.?|COS\s*[Φφ]|POWER\s+FACTOR)[:\s]+([\d\.]+)/]),
+      efficiency:        find([/(?:EFF|EFFICIENCY|\u03B7)[:\s]+([\d\.]+\s*%?)/,
+                               /(\d{2,3}(?:\.\d+)?\s*%)(?=.*(?:EFF|ETA))/]),
+      ip_rating:         find([/(IP\s*\d{2}[A-Z]?)/]),
+      insulation_class:  find([/(?:INS(?:ULATION)?(?:\s+CLASS)?|CLASS)[:\s]+([A-H](?:\s*\d+)?)/,
+                               /CLASS[:\s]+([A-H])/]),
+      duty_cycle:        find([/(?:DUTY|S\d)[:\s]+([\w\d\s]+)/]),
+      standards:         find([/(IEC|IEEE|BS|DIN|NEMA|AS)[\s\-]*[\d\.]+/]),
+      weight_kg:         find([/(?:WT|WEIGHT|MASS)[:\s]+(\d+(?:\.\d+)?\s*KG)/,
+                               /(\d+(?:\.\d+)?\s*KG)(?=\s|$)/]),
+      country_of_origin: find([/(?:MADE IN|ORIGIN|MFD IN)[:\s]+([A-Z\s]+?)(?:\n|\d)/]),
+      year_of_manufacture: find([/(?:YEAR|YR|DATE OF MFR)[:\s]+(\d{4})/,
+                                 /(?:MFD|MANUFACTURED)[:\s]+(\d{4})/]),
+      confidence:        'medium',
+    };
+  }
+
+  function guessManufacturer(text: string): string | null {
+    const brands = ['ABB','SIEMENS','WEG','LEROY-SOMER','LEROY SOMER','BROOK CROMPTON',
+      'MARATHON','BALDOR','NIDEC','TOSHIBA','MITSUBISHI','SCHNEIDER','EATON','GE','ABB',
+      'FLENDER','CROMPTON','THREEBOND','WABTEC','BROOK','PARSUN','WUXI'];
+    for (const b of brands) { if (text.includes(b)) return b; }
+    return null;
   }
 
   async function saveAsEquipment() {
@@ -462,12 +551,15 @@ export default function ScannerPage() {
                   <FileImage size={18} style={{ color: 'var(--blue)' }}/>
                 </div>
                 <div>
-                  <p className="text-sm font-bold mb-1" style={{ color: '#fff' }}>AI Nameplate Reader</p>
+                  <p className="text-sm font-bold mb-1" style={{ color: '#fff' }}>Nameplate Reader — Offline OCR</p>
                   <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>
-                    Photo the metal nameplate. AI extracts manufacturer, model, serial, voltage, power, speed, IP rating, insulation class and all other specs.
+                    Takes a photo of the equipment nameplate and reads all specs using on-device OCR — works without internet, no API key needed.
                   </p>
-                  <p className="text-xs mt-1.5 font-semibold" style={{ color: 'var(--blue)' }}>
-                    💡 Requires GEMINI_API_KEY in Vercel env vars. Get free at aistudio.google.com
+                  <p className="text-xs mt-1.5 font-semibold" style={{ color: 'var(--green)' }}>
+                    ✓ 100% offline — no internet required after first load
+                  </p>
+                  <p className="text-xs mt-0.5" style={{ color: 'var(--text-3)' }}>
+                    💡 Good lighting + close-up = best results
                   </p>
                 </div>
               </div>
@@ -523,7 +615,14 @@ export default function ScannerPage() {
                   </div>
                 )}
                 <div className="card mb-4">
-                  <p className="text-sm font-bold mb-3" style={{ color: 'var(--amber)' }}>📋 Extracted Nameplate Data</p>
+                  <p className="text-sm font-bold mb-1" style={{ color: 'var(--amber)' }}>📋 Extracted Nameplate Data</p>
+                  <p className="text-xs mb-3" style={{ color: 'var(--text-3)' }}>Fields auto-detected from OCR text. Edit equipment details after saving.</p>
+                  {nameplateData.raw_text && (
+                    <div className="mb-3 p-2.5 rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+                      <p style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Raw OCR Text</p>
+                      <p style={{ fontSize: 10, color: 'var(--text-2)', whiteSpace: 'pre-wrap', fontFamily: 'monospace', lineHeight: 1.6 }}>{nameplateData.raw_text.slice(0, 400)}{nameplateData.raw_text.length > 400 ? '...' : ''}</p>
+                    </div>
+                  )}
                   <SpecRow label="Equipment Type"      value={nameplateData.equipment_name}      />
                   <SpecRow label="Manufacturer"        value={nameplateData.manufacturer}         />
                   <SpecRow label="Model"               value={nameplateData.model}                />
