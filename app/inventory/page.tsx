@@ -198,7 +198,7 @@ export default function InventoryPage() {
     });
   }
 
-  async function submitLPO(e: React.FormEvent, status: 'draft'|'pending_approval') {
+  async function submitLPO(e: React.FormEvent, status: 'draft'|'pending_approval'|'approved') {
     e.preventDefault();
     const isAdmin = ['admin','senior_engineer'].includes(userRole);
     const finalStatus = isAdmin ? 'approved' : status;
