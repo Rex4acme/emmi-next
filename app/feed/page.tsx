@@ -168,10 +168,10 @@ function FeedCard({ item, currentUserId, userRole, onDelete, onFlag, flagged }:
           <span className="text-xs capitalize" style={{ color:'var(--text-3)' }}>{s.shift_type} · {new Date(s.shift_date+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'})}</span>
         </div>
         {s.summary && <p className="text-xs mb-2 leading-relaxed" style={{ color:'var(--text-2)' }}>{s.summary}</p>}
-        {s.open_issues?.length>0 && (
+        {(s.open_issues?.length ?? 0) > 0 && (
           <div className="mb-2">
             <p className="text-xs font-bold mb-1" style={{ color:'var(--amber)' }}>Open Issues</p>
-            {s.open_issues.map((iss:string,i:number) => <p key={i} className="text-xs" style={{ color:'var(--text-2)' }}>• {iss}</p>)}
+            {s.open_issues?.map((iss:string,i:number) => <p key={i} className="text-xs" style={{ color:'var(--text-2)' }}>• {iss}</p>)}
           </div>
         )}
         {s.handover_notes && (
