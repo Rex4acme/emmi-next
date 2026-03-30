@@ -237,7 +237,7 @@ export default function FeedPage() {
 
   async function handleFlag(item:FeedItem) {
     const next=new Set(flaggedIds); next.add(item.id); setFlaggedIds(next);
-    try{sessionStorage.setItem('emmi-flagged',JSON.stringify([...next]));}catch{}
+    try{sessionStorage.setItem('emmi-flagged',JSON.stringify(Array.from(next)));}catch{}
     if(orgId) {
       const who=myProfile?.full_name||'An engineer';
       const what=item.type==='fault'?`fault: "${item.fault?.title}"`:item.type==='activity'?`activity: "${item.activity?.title}"`:`shift log`;
