@@ -567,7 +567,7 @@ export default function InventoryPage() {
                 <div>
                   <p className="text-sm font-bold mb-1" style={{ color: '#fff' }}>Supplier Comparative Analysis</p>
                   <p className="text-xs leading-relaxed" style={{ color: 'var(--text-2)' }}>
-                    Get at least 3 quotations before purchasing. Enter each supplier's price to automatically identify the best value. Save as a formal comparative document.
+                    Get at least 3 quotations before purchasing. Enter each supplier&apos;s price to automatically identify the best value. Save as a formal comparative document.
                   </p>
                 </div>
               </div>
@@ -674,12 +674,12 @@ export default function InventoryPage() {
         {showPartForm && (
           <div style={{ position:'fixed', inset:0, zIndex:500, background:'rgba(0,0,0,0.7)', display:'flex', alignItems:'flex-end' }}
             onClick={e => { if (e.target === e.currentTarget) setShowPartForm(false); }}>
-            <div style={{ width:'100%', maxWidth:520, margin:'0 auto', background:'var(--base)', borderRadius:'20px 20px 0 0', padding:'20px 20px 36px', maxHeight:'90vh', overflowY:'auto' }}>
-              <div className="flex items-center justify-between mb-5">
+            <div style={{ width:'100%', maxWidth:520, margin:'0 auto', background:'var(--base)', borderRadius:'20px 20px 0 0', maxHeight:'92vh', display:'flex', flexDirection:'column' }}>
+              <div className="flex items-center justify-between" style={{ padding:'20px 20px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
                 <h2 className="text-base font-bold" style={{ color: '#fff' }}>{editingPart ? 'Edit Part' : 'Add Spare Part'}</h2>
                 <button onClick={() => setShowPartForm(false)} style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:6, cursor:'pointer', color:'var(--text-2)' }}><X size={16}/></button>
               </div>
-              <form onSubmit={savePart} className="space-y-3">
+              <form onSubmit={savePart} className="space-y-3" style={{ overflowY:'auto', padding:'20px', flex:1 }}>
                 <div>
                   <label className="form-label">Part Name <span style={{ color:'var(--red)' }}>*</span></label>
                   <input value={partForm.name} onChange={e => setPartForm(f => ({...f, name:e.target.value}))} placeholder="e.g. Deep Groove Bearing 6205" required className="form-input"/>
@@ -716,12 +716,12 @@ export default function InventoryPage() {
         {showLPOForm && (
           <div style={{ position:'fixed', inset:0, zIndex:500, background:'rgba(0,0,0,0.7)', display:'flex', alignItems:'flex-end' }}
             onClick={e => { if (e.target === e.currentTarget) setShowLPOForm(false); }}>
-            <div style={{ width:'100%', maxWidth:560, margin:'0 auto', background:'var(--base)', borderRadius:'20px 20px 0 0', padding:'20px 20px 36px', maxHeight:'92vh', overflowY:'auto' }}>
-              <div className="flex items-center justify-between mb-5">
+            <div style={{ width:'100%', maxWidth:560, margin:'0 auto', background:'var(--base)', borderRadius:'20px 20px 0 0', maxHeight:'92vh', display:'flex', flexDirection:'column' }}>
+              <div className="flex items-center justify-between" style={{ padding:'20px 20px', borderBottom:'1px solid var(--border)', flexShrink:0 }}>
                 <h2 className="text-base font-bold" style={{ color: '#fff' }}>New Local Purchase Order</h2>
                 <button onClick={() => setShowLPOForm(false)} style={{ background:'var(--card)', border:'1px solid var(--border)', borderRadius:8, padding:6, cursor:'pointer', color:'var(--text-2)' }}><X size={16}/></button>
               </div>
-              <form onSubmit={e => submitLPO(e, isAdmin ? 'approved' : 'pending_approval')} className="space-y-4">
+              <form onSubmit={e => submitLPO(e, isAdmin ? 'approved' : 'pending_approval')} className="space-y-4" style={{ overflowY:'auto', padding:'20px', flex:1 }}>
                 <div><label className="form-label">LPO Title <span style={{ color:'var(--red)' }}>*</span></label><input value={lpoTitle} onChange={e => setLpoTitle(e.target.value)} placeholder="e.g. Bearing procurement Q1 2025" required className="form-input"/></div>
                 <div><label className="form-label">Supplier / Vendor <span style={{ color:'var(--red)' }}>*</span></label><input value={lpoSupplier} onChange={e => setLpoSupplier(e.target.value)} placeholder="Supplier company name" required className="form-input"/></div>
 

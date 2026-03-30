@@ -112,8 +112,8 @@ function keyValueTextToJson(rawText: string): NameplateData | null {
 
 async function readNameplate(imageBuffer: Buffer): Promise<NameplateData | null> {
   try {
-    const module = await import('paddleocr');
-    const PaddleOCR = module?.default ?? module?.PaddleOCR ?? module;
+    const paddleocrModule = await import('paddleocr');
+    const PaddleOCR = paddleocrModule?.default ?? paddleocrModule?.PaddleOCR ?? paddleocrModule;
 
     if (!PaddleOCR || typeof PaddleOCR !== 'function') {
       console.warn('PaddleOCR module found but not usable.');

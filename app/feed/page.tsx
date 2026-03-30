@@ -40,13 +40,21 @@ function CardMenu({ item, currentUserId, userRole, onDelete, onFlag }:
   const isAdmin = ['admin','senior_engineer'].includes(userRole);
   const canDel  = isOwn || isAdmin;
   const canFlag = !isOwn;
-  if (!canDel && !canFlag) return null;
+  const hideMenu = !canDel && !canFlag;
 
   useEffect(() => {
-    const h = (e:MouseEvent) => { if(ref.current && !ref.current.contains(e.target as Node)){open_(false);conf_(false);} };
-    document.addEventListener('mousedown',h);
-    return () => document.removeEventListener('mousedown',h);
-  },[]);
+    if (hideMenu) return;
+    const h = (e:MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        open_(false);
+        conf_(false);
+      }
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [hideMenu]);
+
+  if (hideMenu) return null;
 
   return (
     <div ref={ref} style={{ position:'relative',flexShrink:0 }}>

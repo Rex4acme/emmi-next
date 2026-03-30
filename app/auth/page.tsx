@@ -98,7 +98,7 @@ export default function AuthPage() {
           <div className="card" style={{ padding: 28 }}>
             <h2 className="text-base font-bold mb-1" style={{ color: 'var(--text)' }}>Reset your password</h2>
             <p className="text-xs mb-5" style={{ color: 'var(--text-2)' }}>
-              Enter your email and we'll send you a link to set a new password.
+              Enter your email and we&apos;ll send you a link to set a new password.
             </p>
             {message ? (
               <div>

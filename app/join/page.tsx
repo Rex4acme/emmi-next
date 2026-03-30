@@ -92,7 +92,7 @@ function JoinForm() {
           style={{ background: 'rgba(240,165,0,0.07)', border: '1px solid rgba(240,165,0,0.2)' }}>
           <Users size={16} style={{ color: 'var(--amber)', flexShrink: 0 }}/>
           <div>
-            <p className="text-xs" style={{ color: 'var(--text-2)' }}>You're joining plant</p>
+            <p className="text-xs" style={{ color: 'var(--text-2)' }}>You&apos;re joining plant</p>
             <p className="text-sm font-bold font-mono" style={{ color: 'var(--amber)' }}>{plantId.toUpperCase()}</p>
           </div>
         </div>
@@ -152,7 +152,7 @@ export default function JoinPage() {
             <Zap size={32} style={{ color: 'var(--amber)' }} strokeWidth={2.5}/>
           </div>
           <h1 className="text-3xl font-bold font-display" style={{ color: 'var(--amber)' }}>EMMI</h1>
-          <p className="text-sm mt-1" style={{ color: 'var(--text-2)' }}>You've been invited to join a plant</p>
+          <p className="text-sm mt-1" style={{ color: 'var(--text-2)' }}>You&apos;ve been invited to join a plant</p>
         </div>
 
         <div className="card" style={{ padding: 28 }}>
