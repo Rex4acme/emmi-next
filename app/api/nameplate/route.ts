@@ -39,7 +39,7 @@ Extract ALL visible information and return ONLY valid JSON (no markdown, no expl
   "notes": "note any difficulty reading, damaged areas, or unclear characters"
 }`;
 
-const MODELS = [
+const MODELS: string[] = [
   'gemini-2.0-flash-exp',
   'gemini-1.5-flash',
 ];
@@ -194,11 +194,7 @@ export async function POST(request: NextRequest) {
           continue;
         }
         
-        // Add metadata
-        parsed._model = model;
-        parsed._latency_ms = Date.now() - startTime;
-        
-        return NextResponse.json({ ok: true, specs: parsed, model });
+        return NextResponse.json({ ok: true, specs: parsed, model });}
         
       } catch (err: any) {
         if (err.name === 'AbortError') {
