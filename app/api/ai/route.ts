@@ -12,6 +12,9 @@
 //   OPENROUTER_API_KEY = (your key from openrouter.ai — free)
 
 import { NextRequest, NextResponse } from 'next/server';
+import { AIAssistantResult } from '@/types/types_index';
+
+type AIMessage = { role: 'system' | 'user' | 'assistant'; content: string };
 
 const EMMI_SYSTEM = `You are EMMI — an expert AI assistant for industrial electrical engineers with 20+ years of experience.
 You specialise in: electrical fault diagnosis, power systems (HV/MV/LV), transformers, motors, switchgear, VFDs, 
@@ -20,6 +23,24 @@ and occupational safety (PTW, LOTO, arc flash, hot work).
 Give precise, technical, practical answers. Use proper electrical engineering terminology.
 Always flag safety implications for high-voltage or live-line work.
 When asked to analyse a fault, respond with valid JSON only — no markdown, no preamble outside the JSON.`;
+
+function isAIMessage(value: any): value is AIMessage {
+  return (
+    value &&
+    typeof value === 'object' &&
+    ['system', 'user', 'assistant'].includes(value.role) &&
+    typeof value.content === 'string'
+  );
+}
+
+function normalizeMessages(value: any): AIMessage[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isAIMessage);
+}
+
+function notNull<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
+}
 
 export async function POST(request: NextRequest) {
   let body: any = {};
