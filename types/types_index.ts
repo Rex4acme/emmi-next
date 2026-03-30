@@ -322,7 +322,7 @@ export interface NameplateData {
   additional_specs?: string[];
   confidence?: 'high' | 'medium' | 'low';
   notes?: string;
-  _model?: 'gemini-2.0-flash-exp' | 'gemini-1.5-flash' | 'paddleocr';
+  _model?: 'gemini-2.0-flash-exp' | 'gemini-1.5-flash';
   _latency_ms?: number;
 }
 
