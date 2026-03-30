@@ -54,8 +54,13 @@ export async function POST(request: NextRequest) {
   }
 
   return NextResponse.json({
-    content: [{ type: 'text', text: 'AI assistant is temporarily unavailable. Please check your GROQ_API_KEY in Vercel environment variables. Get a free key at console.groq.com' }]
-  });
+    content: [{
+      type: 'text',
+      text: 'AI assistant is temporarily unavailable. Please check your GROQ_API_KEY or OPENROUTER_API_KEY in environment variables, and ensure internet access.',
+    }],
+    ok: false,
+    code: 'ai_unavailable',
+  }, { status: 503 });
 }
 
 // ── Provider 1 & 2: Groq ──────────────────────────────────────

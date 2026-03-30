@@ -297,6 +297,35 @@ export interface FeedItem {
   shift_log?: ShiftLog;
 }
 
+// ── Nameplate OCR data type ───────────────────────────────────
+export interface NameplateData {
+  equipment_name?: string;
+  manufacturer?: string;
+  model?: string;
+  serial_number?: string;
+  voltage_rating?: string;
+  current_rating?: string;
+  power_rating?: string;
+  frequency?: string;
+  speed_rpm?: string;
+  power_factor?: string;
+  efficiency?: string;
+  ip_rating?: string;
+  insulation_class?: string;
+  duty_cycle?: string;
+  connection?: string;
+  poles?: string;
+  standards?: string;
+  weight_kg?: string;
+  country_of_origin?: string;
+  year_of_manufacture?: string;
+  additional_specs?: string[];
+  confidence?: 'high' | 'medium' | 'low';
+  notes?: string;
+  _model?: 'gemini-2.0-flash-exp' | 'gemini-1.5-flash' | 'paddleocr';
+  _latency_ms?: number;
+}
+
 // ── AI response types ─────────────────────────────────────────
 export interface AIFaultAnalysis {
   ok: boolean;

@@ -6,6 +6,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
+import { NameplateData } from '@/types/types_index';
 
 const PROMPT = `You are an expert electrical engineer with 20+ years experience reading industrial equipment nameplates.
 Look very carefully at every character on this nameplate. Read each number and letter precisely.
@@ -46,7 +47,7 @@ const MODELS = [
 const MAX_IMAGE_SIZE_MB = 5;
 const MAX_BASE64_LENGTH = MAX_IMAGE_SIZE_MB * 1024 * 1024 * 1.37; // base64 overhead ~37%
 
-function extractJsonFromText(rawText: string): any | null {
+function extractJsonFromText(rawText: string): NameplateData | null {
   // Try direct parse first
   try {
     return JSON.parse(rawText);
@@ -74,13 +75,17 @@ function extractJsonFromText(rawText: string): any | null {
   }
 }
 
-function isValidNameplateData(data: any): boolean {
+function isValidNameplateData(data: NameplateData | null): boolean {
+  if (!data || typeof data !== 'object') return false;
   // Require at least one meaningful field
-  const essentialFields = ['equipment_name', 'manufacturer', 'model', 'serial_number'];
-  return essentialFields.some(field => data[field] && typeof data[field] === 'string' && data[field].trim().length > 0);
+  const essentialFields: Array<keyof NameplateData> = ['equipment_name', 'manufacturer', 'model', 'serial_number'];
+  return essentialFields.some(field => {
+    const value = data[field];
+    return typeof value === 'string' && value.trim().length > 0;
+  });
 }
 
-function keyValueTextToJson(rawText: string): any | null {
+function keyValueTextToJson(rawText: string): NameplateData | null {
   const lines = rawText
     .split(/\r?\n/)
     .map(line => line.trim())
@@ -105,7 +110,7 @@ function keyValueTextToJson(rawText: string): any | null {
   return Object.keys(obj).length ? obj : null;
 }
 
-async function readNameplate(imageBuffer: Buffer): Promise<any | null> {
+async function readNameplate(imageBuffer: Buffer): Promise<NameplateData | null> {
   try {
     const module = await import('paddleocr');
     const PaddleOCR = module?.default ?? module?.PaddleOCR ?? module;
@@ -269,14 +274,31 @@ export async function POST(request: NextRequest) {
   }
 }
 
+function isValidImageUrl(imageUrl: string): boolean {
+  try {
+    const url = new URL(imageUrl);
+    if (!(url.protocol === 'https:' || url.protocol === 'http:')) return false;
+    // Avoid SSRF by blocking local addresses
+    if (['localhost', '127.0.0.1', '::1'].includes(url.hostname)) return false;
+    if (url.hostname.endsWith('.local')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function GET(request: NextRequest) {
   const imageUrl = request.nextUrl.searchParams.get('image');
   if (!imageUrl) {
     return NextResponse.json({ error: 'No image URL provided' }, { status: 400 });
   }
 
+  if (!isValidImageUrl(imageUrl)) {
+    return NextResponse.json({ error: 'Invalid/blocked image URL' }, { status: 400 });
+  }
+
   try {
-    const response = await fetch(imageUrl);
+    const response = await fetch(imageUrl, { method: 'GET' });
     if (!response.ok) {
       return NextResponse.json({ error: 'Failed to fetch image' }, { status: 500 });
     }
