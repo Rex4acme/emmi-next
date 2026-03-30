@@ -110,47 +110,6 @@ function keyValueTextToJson(rawText: string): NameplateData | null {
   return Object.keys(obj).length ? obj : null;
 }
 
-async function readNameplate(imageBuffer: Buffer): Promise<NameplateData | null> {
-  try {
-    const paddleocrModule = await import('paddleocr');
-    const PaddleOCR = paddleocrModule?.default ?? paddleocrModule?.PaddleOCR ?? paddleocrModule;
-
-    if (!PaddleOCR || typeof PaddleOCR !== 'function') {
-      console.warn('PaddleOCR module found but not usable.');
-      return null;
-    }
-
-    const ocr = new PaddleOCR();
-    const ocrResult = await ocr.ocr(imageBuffer);
-
-    const plainText: string[] = [];
-    if (Array.isArray(ocrResult)) {
-      for (const line of ocrResult) {
-        if (Array.isArray(line)) {
-          for (const cell of line) {
-            if (cell?.[1]) plainText.push(String(cell[1]));
-          }
-        } else if (typeof line === 'string') {
-          plainText.push(line);
-        }
-      }
-    }
-
-    const text = plainText.join('\n').trim();
-    if (!text) return null;
-
-    const parsed = extractJsonFromText(text) ?? keyValueTextToJson(text);
-    if (parsed && isValidNameplateData(parsed)) {
-      return parsed;
-    }
-
-    return null;
-  } catch (err) {
-    console.warn('PaddleOCR readNameplate failed:', err);
-    return null;
-  }
-}
-
 export async function POST(request: NextRequest) {
   const requestId = randomUUID().slice(0, 8);
   const startTime = Date.now();
@@ -251,19 +210,7 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // Fallback OCR path (PaddleOCR)
-    try {
-      const imageBuffer = Buffer.from(imageBase64, 'base64');
-      const ocrParsed = await readNameplate(imageBuffer);
-      if (ocrParsed) {
-        ocrParsed._source = 'paddleocr';
-        ocrParsed._latency_ms = Date.now() - startTime;
-        return NextResponse.json({ ok: true, specs: ocrParsed, model: 'paddleocr' });
-      }
-    } catch (err: any) {
-      console.error('PaddleOCR fallback failed:', err);
-    }
-
+    // Fallback OCR path (PaddleOCR) — not available in production; use Gemini instead
     return NextResponse.json({
       error: 'Could not read the nameplate. Try: better lighting, move closer, avoid reflections, and make sure the nameplate fills the frame.',
     }, { status: 422 });
@@ -271,52 +218,5 @@ export async function POST(request: NextRequest) {
   } catch (err: any) {
     console.error(`[${requestId}] Nameplate route error:`, err);
     return NextResponse.json({ error: err.message || 'Server error.' }, { status: 500 });
-  }
-}
-
-function isValidImageUrl(imageUrl: string): boolean {
-  try {
-    const url = new URL(imageUrl);
-    if (!(url.protocol === 'https:' || url.protocol === 'http:')) return false;
-    // Avoid SSRF by blocking local addresses
-    if (['localhost', '127.0.0.1', '::1'].includes(url.hostname)) return false;
-    if (url.hostname.endsWith('.local')) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export async function GET(request: NextRequest) {
-  const imageUrl = request.nextUrl.searchParams.get('image');
-  if (!imageUrl) {
-    return NextResponse.json({ error: 'No image URL provided' }, { status: 400 });
-  }
-
-  if (!isValidImageUrl(imageUrl)) {
-    return NextResponse.json({ error: 'Invalid/blocked image URL' }, { status: 400 });
-  }
-
-  try {
-    const response = await fetch(imageUrl, { method: 'GET' });
-    if (!response.ok) {
-      return NextResponse.json({ error: 'Failed to fetch image' }, { status: 500 });
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const imageBuffer = Buffer.from(arrayBuffer);
-
-    const parsed = await readNameplate(imageBuffer);
-    if (!parsed) {
-      return NextResponse.json({
-        error: 'Could not read the nameplate with OCR. Try a clearer image or check your PaddleOCR setup.',
-      }, { status: 422 });
-    }
-
-    parsed._source = 'paddleocr';
-    return NextResponse.json({ ok: true, specs: parsed, model: 'paddleocr' });
-  } catch (err: any) {
-    console.error('GET nameplate route error:', err);
-    return NextResponse.json({ error: err.message || 'Failed to read nameplate' }, { status: 500 });
   }
 }
