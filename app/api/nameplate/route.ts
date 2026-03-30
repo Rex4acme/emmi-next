@@ -1,8 +1,8 @@
 // app/api/nameplate/route.ts
-// Uses Google Gemini Flash vision to read equipment nameplates.
-// Tries gemini-2.0-flash-exp first, falls back to gemini-1.5-flash.
-// Free key: aistudio.google.com → Get API Key
-// Add as GEMINI_API_KEY in Vercel → Settings → Environment Variables
+// Uses Google Cloud Vision API for OCR text extraction, then AI for structured JSON parsing.
+// Free tier: 1,000 requests/month. Get API key from Google Cloud Console.
+// Add as GOOGLE_VISION_API_KEY in Vercel → Settings → Environment Variables
+// Also requires AI API for parsing (uses the /api/ai route)
 
 import { NextRequest, NextResponse } from 'next/server';
 import { randomUUID } from 'crypto';
@@ -38,11 +38,6 @@ Extract ALL visible information and return ONLY valid JSON (no markdown, no expl
   "confidence": "high if nameplate is clear, medium if partially worn, low if very worn/reflective",
   "notes": "note any difficulty reading, damaged areas, or unclear characters"
 }`;
-
-const MODELS: string[] = [
-  'gemini-2.0-flash-exp',
-  'gemini-1.5-flash',
-];
 
 const MAX_IMAGE_SIZE_MB = 5;
 const MAX_BASE64_LENGTH = MAX_IMAGE_SIZE_MB * 1024 * 1024 * 1.37; // base64 overhead ~37%
@@ -136,77 +131,92 @@ export async function POST(request: NextRequest) {
       }, { status: 415 });
     }
     
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GOOGLE_VISION_API_KEY;
     if (!apiKey) {
       return NextResponse.json({
-        error: 'GEMINI_API_KEY not configured. Add your free key from aistudio.google.com',
+        error: 'GOOGLE_VISION_API_KEY not configured. Get your free key from Google Cloud Console (Vision API).',
         noKey: true,
       }, { status: 503 });
     }
     
-    // Try each model in order
-    for (const model of MODELS) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
-        
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [
-                  { text: PROMPT },
-                  { inline_data: { mime_type: mimeType, data: imageBase64 } },
-                ],
-              }],
-              generationConfig: { temperature: 0.05, maxOutputTokens: 1024 },
-            }),
-            signal: controller.signal,
-          }
-        );
-        
-        clearTimeout(timeoutId);
-        
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          // Model not found -> try next
-          if (res.status === 404) continue;
-          // Auth or quota errors -> stop immediately
-          if (res.status === 401 || res.status === 403 || res.status === 429) {
-            console.error(`Gemini auth/quota error (${model}):`, err);
-            return NextResponse.json({
-              error: res.status === 429 ? 'Gemini API quota exceeded. Try again later.' : 'Gemini API key invalid or expired.',
-            }, { status: res.status });
-          }
-          console.error(`Gemini ${model} error (${res.status}):`, err);
-          continue;
-        }
-        
-        const data = await res.json();
-        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-        const parsed = extractJsonFromText(rawText);
-        
-        if (!parsed || !isValidNameplateData(parsed)) {
-          console.warn(`Model ${model} returned invalid data:`, parsed);
-          continue;
-        }
-        
-        return NextResponse.json({ ok: true, specs: parsed, model });}
-        
-      } catch (err: any) {
-        if (err.name === 'AbortError') {
-          console.error(`Model ${model} timeout after 30s`);
-        } else {
-          console.error(`Model ${model} failed:`, err);
-        }
-        continue;
+    // Extract text using Google Cloud Vision API
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    
+    const visionRes = await fetch(
+      `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requests: [{
+            image: { content: imageBase64 },
+            features: [{ type: 'TEXT_DETECTION' }]
+          }]
+        }),
+        signal: controller.signal,
       }
+    );
+    
+    clearTimeout(timeoutId);
+    
+    if (!visionRes.ok) {
+      const err = await visionRes.json().catch(() => ({}));
+      console.error('Vision API error:', err);
+      return NextResponse.json({
+        error: 'Failed to extract text from image. Check API key and image quality.',
+      }, { status: visionRes.status });
     }
     
-    // Fallback OCR path (PaddleOCR) — not available in production; use Gemini instead
+    const visionData = await visionRes.json();
+    const text = visionData.responses?.[0]?.textAnnotations?.[0]?.description || '';
+    
+    if (!text.trim()) {
+      return NextResponse.json({
+        error: 'No text detected in the image. Ensure the nameplate is clear and well-lit.',
+      }, { status: 422 });
+    }
+    
+    // Now, use AI to parse the extracted text into structured JSON
+    const aiRes = await fetch(`${process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000'}/api/ai`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: [{ role: 'user', content: `Extract information from this nameplate text and return ONLY valid JSON:\n\n${text}` }],
+        system: PROMPT
+      })
+    });
+    
+    if (!aiRes.ok) {
+      console.error('AI API error:', await aiRes.text());
+      // Fallback to key-value parsing
+      const parsed = keyValueTextToJson(text);
+      if (parsed && isValidNameplateData(parsed)) {
+        return NextResponse.json({ ok: true, specs: parsed, method: 'fallback' });
+      }
+      return NextResponse.json({
+        error: 'Failed to parse nameplate data. Try again or check the image.',
+      }, { status: 422 });
+    }
+    
+    const aiData = await aiRes.json();
+    const rawText = aiData.result || '';
+    const parsed = extractJsonFromText(rawText);
+    
+    if (!parsed || !isValidNameplateData(parsed)) {
+      // Fallback
+      const fallbackParsed = keyValueTextToJson(text);
+      if (fallbackParsed && isValidNameplateData(fallbackParsed)) {
+        return NextResponse.json({ ok: true, specs: fallbackParsed, method: 'fallback' });
+      }
+      return NextResponse.json({
+        error: 'Could not extract valid data. Ensure the nameplate is readable.',
+      }, { status: 422 });
+    }
+    
+    return NextResponse.json({ ok: true, specs: parsed, method: 'ai' });
+    
+    // If AI fails, fallback parsing is handled above
     return NextResponse.json({
       error: 'Could not read the nameplate. Try: better lighting, move closer, avoid reflections, and make sure the nameplate fills the frame.',
     }, { status: 422 });
