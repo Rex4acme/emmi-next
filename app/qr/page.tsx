@@ -9,7 +9,6 @@ import AppShell from '@/components/layout/AppShell';
 import {
   Scan, QrCode, Camera, X, Loader2, CheckCircle, Search, FileImage, ChevronRight, Plus, Info,
 } from 'lucide-react';
-import QRCode from 'qrcode'; // Install: npm i qrcode @types/qrcode
 
 // ============= Types =============
 interface Equipment {
@@ -62,14 +61,16 @@ type Mode = 'scan' | 'nameplate' | 'generate';
 
 // ============= Subcomponents =============
 const QRImage = ({ value, size = 220 }: { value: string; size?: number }) => {
-  const [qrUrl, setQrUrl] = useState<string>('');
-  useEffect(() => {
-    QRCode.toDataURL(value, { margin: 1, width: size, color: { dark: '#f0a500', light: '#1a2030' } })
-      .then(setQrUrl)
-      .catch(() => setQrUrl(''));
-  }, [value, size]);
-  if (!qrUrl) return <div className="w-[220px] h-[220px] bg-surface animate-pulse rounded-xl" />;
-  return <img src={qrUrl} alt="QR Code" width={size} height={size} style={{ borderRadius: 12, border: '2px solid rgba(240,165,0,0.3)' }} />;
+  // Use external QR server (no extra dependencies)
+  return (
+    <img
+      src={`https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(value)}&bgcolor=1a2030&color=f0a500&format=svg`}
+      alt="QR Code"
+      width={size}
+      height={size}
+      style={{ borderRadius: 12, border: '2px solid rgba(240,165,0,0.3)' }}
+    />
+  );
 };
 
 const SpecRow = ({ label, value }: { label: string; value: any }) => {
